@@ -90,6 +90,9 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer st.Close()
+	if n, err := st.CloseInterrupted(context.Background()); err == nil && n > 0 {
+		log.Info("marked runs interrupted by the last stop", "count", n)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
