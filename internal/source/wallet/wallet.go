@@ -28,28 +28,21 @@ func init() {
 		Kind:        "wallet",
 		Name:        "Wallet",
 		Category:    "wallet",
-		Description: "A hardware wallet (Ledger, Trezor…) or an app (MetaMask, Phantom, Trust Wallet, Exodus…), every account in one source: Bitcoin, Ethereum and EVM networks, Solana, XRP, Cardano, Tron, Litecoin, Dogecoin, Bitcoin Cash. Read-only.",
+		Description: "Ledger, Trezor, MetaMask, Phantom… every account in one source.",
 		Fields: []source.Field{
 			{Name: "app", Label: "App", Optional: true, Hidden: true},
 			{Name: "accounts", Label: "Accounts", Secret: true, Lines: true,
-				Help: "Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: the account's extended public key (Ledger Live: open the account, then ⋯, Edit account, Advanced). " +
-					"A wallet app that shows a single Bitcoin address (Phantom…): that address.\n" +
-					"Ethereum: the account's 0x… address. Fundarr reads it on Ethereum, Optimism and Avalanche, and on Arbitrum, Base, Polygon and Gnosis with a free Blockscout key (Advanced).\n" +
-					"Tron: the account's T… address (TRX and tokens such as USDT).\n" +
-					"Cardano: a receive address of the account (addr1…), or its stake address (stake1…); staking rewards included.\n" +
-					"XRP: the account's r… address.\n" +
-					"Solana: the account's address (SOL and well-known tokens)."},
+				Help: "Bitcoin and similar: the account's public key (xpub…) or address.\nOther coins: the receive address."},
 			{Name: "esplora_url", Label: "Bitcoin server", Optional: true, Advanced: true,
-				Help: "Your own mempool or electrs, for privacy. By default: mempool.space, then blockstream.info."},
-			{Name: "solana_rpc", Label: "Solana RPC", Secret: true, Optional: true, Advanced: true,
-				Help: "A private RPC URL (Helius, QuickNode…) reads a large Solana history much faster than the public one."},
+				Help: "Your own mempool or electrs."},
 			{Name: "blockscout_key", Label: "Blockscout API key", Secret: true, Optional: true, Advanced: true,
-				Help: "Free at dev.blockscout.com. Adds Arbitrum, Base, Polygon and Gnosis, whose explorers no longer answer without a key; without it, Ethereum, Optimism and Avalanche are read."},
+				Help: "Free at dev.blockscout.com. Adds Arbitrum, Base, Polygon, Gnosis."},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true, Advanced: true,
-				Help: "Adds BNB Chain, which no free explorer covers, with an Etherscan plan that includes it."},
+				Help: "Adds BNB Chain (paid plan)."},
+			{Name: "solana_rpc", Label: "Solana RPC", Secret: true, Optional: true, Advanced: true,
+				Help: "A private RPC reads Solana faster."},
 		},
-		Setup: "Fundarr only reads public keys and addresses: it sees the history, it can never spend. Add each account of the wallet below; " +
-			"Fundarr recognizes its blockchain. Never type your recovery phrase into Fundarr or any website: it is never needed to read.",
+		Setup: "Read-only: Fundarr never needs your recovery phrase.",
 		New:     New,
 		Detect:  Detect,
 		Preview: Preview,

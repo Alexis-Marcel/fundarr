@@ -337,7 +337,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	bal, err := d.Preview(ctx, val, source.Config{Values: settings, HTTP: s.eng.HTTP})
 	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-		writeErr(w, 422, "still reading after a minute; the sync will read it fully")
+		writeErr(w, 422, "too slow to check here; the sync will read it")
 		return
 	}
 	if err != nil {
