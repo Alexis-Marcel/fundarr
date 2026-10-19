@@ -26,12 +26,13 @@ import (
 func init() {
 	source.Register(source.Definition{
 		Kind:        "wallet",
-		Name:        "Wallet (Ledger, Trezor…)",
+		Name:        "Wallet",
 		Category:    "wallet",
-		Description: "Every account of a hardware or software wallet in one source: Bitcoin, Ethereum and EVM networks, Solana, XRP, Cardano, Tron, Litecoin, Dogecoin, Bitcoin Cash. Read-only.",
+		Description: "A hardware wallet (Ledger, Trezor…) or an app (MetaMask, Phantom, Trust Wallet, Exodus…), every account in one source: Bitcoin, Ethereum and EVM networks, Solana, XRP, Cardano, Tron, Litecoin, Dogecoin, Bitcoin Cash. Read-only.",
 		Fields: []source.Field{
 			{Name: "accounts", Label: "Accounts", Secret: true, Lines: true,
-				Help: "Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: the account's extended public key. In Ledger Live, open the account, then ⋯, Edit account, Advanced.\n" +
+				Help: "Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: the account's extended public key (Ledger Live: open the account, then ⋯, Edit account, Advanced). " +
+					"A wallet app that shows a single Bitcoin address (Phantom…): that address.\n" +
 					"Ethereum: the account's 0x… address. Fundarr reads it on every network it supports: Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis, Avalanche.\n" +
 					"Tron: the account's T… address (TRX and tokens such as USDT).\n" +
 					"Cardano: a receive address of the account (addr1…), or its stake address (stake1…); staking rewards included.\n" +
@@ -45,7 +46,7 @@ func init() {
 				Help: "Adds BNB Chain, which no free explorer covers, with an Etherscan plan that includes it."},
 		},
 		Setup: "Fundarr only reads public keys and addresses: it sees the history, it can never spend. Add each account of the wallet below; " +
-			"Fundarr recognizes its blockchain. Never type your recovery words anywhere but on the device itself.",
+			"Fundarr recognizes its blockchain. Never type your recovery phrase into Fundarr or any website: it is never needed to read.",
 		New:    New,
 		Detect: Detect,
 	})
@@ -96,6 +97,16 @@ func utxo(c bitcoin.Coin, esplora bool) func(string, source.Config) (source.Sour
 	}
 }
 
+func utxoAddress(c bitcoin.Coin, esplora bool) func(string, source.Config) (source.Source, error) {
+	return func(line string, cfg source.Config) (source.Source, error) {
+		v := map[string]string{"address": line}
+		if esplora {
+			v["esplora_url"] = cfg.Get("esplora_url")
+		}
+		return bitcoin.NewCoin(c, source.Config{Values: v, HTTP: cfg.HTTP, State: cfg.State})
+	}
+}
+
 // chains, in the order lines are recognized. A prefix ("ltc:", "bch:"…)
 // picks the chain when the line alone cannot tell: Ledger Live shows the
 // Bitcoin Cash key as an xpub, like Bitcoin's.
@@ -113,6 +124,10 @@ var chains = []chain{
 	{kind: "tron", name: "Tron", label: "tron", match: tron.Valid, build: address(tron.New)},
 	{kind: "cardano", name: "Cardano", label: "cardano", match: cardano.Valid, build: address(cardano.New)},
 	{kind: "xrp", name: "XRP", label: "xrp", match: xrp.Valid, build: address(xrp.New)},
+	// One address: wallets that use a single one (Phantom, mobile wallets).
+	{kind: "bitcoin", name: "Bitcoin", label: "bitcoin", match: bitcoin.Bitcoin.ValidAddress, build: utxoAddress(bitcoin.Bitcoin, true)},
+	{kind: "litecoin", name: "Litecoin", label: "litecoin", match: bitcoin.Litecoin.ValidAddress, build: utxoAddress(bitcoin.Litecoin, false)},
+	{kind: "dogecoin", name: "Dogecoin", label: "dogecoin", match: bitcoin.Dogecoin.ValidAddress, build: utxoAddress(bitcoin.Dogecoin, false)},
 	// Last: any 32 bytes in base58 look like a Solana address.
 	{kind: "solana", name: "Solana", match: solana.Valid,
 		build: func(line string, cfg source.Config) (source.Source, error) {
@@ -146,20 +161,27 @@ func detect(line string) (*chain, string, error) {
 	if i := strings.Index(line, ":"); i > 0 {
 		if k, ok := prefixes[strings.ToLower(strings.TrimSpace(line[:i]))]; ok {
 			rest := strings.TrimSpace(line[i+1:])
+			// The entry of that chain that recognizes the value, else its
+			// first (an xpub read as another chain).
+			var first *chain
 			for j := range chains {
-				if chains[j].kind == k {
+				if chains[j].kind != k {
+					continue
+				}
+				if chains[j].match(rest) {
 					return &chains[j], rest, nil
 				}
+				if first == nil {
+					first = &chains[j]
+				}
 			}
+			return first, rest, nil
 		}
 	}
 	for j := range chains {
 		if chains[j].match(line) {
 			return &chains[j], line, nil
 		}
-	}
-	if strings.HasPrefix(line, "bc1") || strings.HasPrefix(line, "1") || strings.HasPrefix(line, "3") {
-		return nil, "", errors.New("an address shows only part of a Bitcoin account: paste the account's extended public key (xpub, ypub or zpub) instead")
 	}
 	return nil, "", errors.New("Fundarr does not recognize this key or address")
 }

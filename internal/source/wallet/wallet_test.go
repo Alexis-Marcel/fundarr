@@ -38,9 +38,8 @@ func TestNewParsesTheList(t *testing.T) {
 		"":                                  "at least one",
 		zpub + "\n" + zpub:                  "already",
 		addr + "\n" + strings.ToLower(addr): "already",
-		"bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu": "xpub",
-		"hello":  "does not recognize",
-		"0x1234": "account 1",
+		"hello":                             "does not recognize",
+		"0x1234":                            "account 1",
 	} {
 		if _, err := New(source.Config{Values: map[string]string{"accounts": in}}); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v", in, err)
@@ -153,7 +152,7 @@ func TestDetect(t *testing.T) {
 	if d, err := Detect(addr); err != nil || d.Chain != "Ethereum & EVM networks" {
 		t.Errorf("evm %+v %v", d, err)
 	}
-	for _, bad := range []string{"bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", "0x12", "ltc:" + addr} {
+	for _, bad := range []string{"bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyv", "0x12", "ltc:" + addr} {
 		if _, err := Detect(bad); err == nil {
 			t.Errorf("%s accepted", bad)
 		}
@@ -185,5 +184,19 @@ func TestDetectSolana(t *testing.T) {
 	// Tron and XRP addresses stay theirs.
 	if d, _ := Detect("TEgfk1gjsMdXZYm9743PWYuM6Fc5MGJYeq"); d.Chain != "Tron" {
 		t.Errorf("tron read as %s", d.Chain)
+	}
+}
+
+func TestDetectSingleAddresses(t *testing.T) {
+	for in, want := range map[string]string{
+		"bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu":     "Bitcoin",
+		"btc:bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu": "Bitcoin",
+		"LQTpS3VaYTjCr4s9Y1t5zbeY26zevf7Fb3":             "Litecoin",
+		"DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L":             "Dogecoin",
+		"rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De":             "XRP",
+	} {
+		if d, err := Detect(in); err != nil || d.Chain != want {
+			t.Errorf("%s: %+v %v", in, d, err)
+		}
 	}
 }

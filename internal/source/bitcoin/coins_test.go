@@ -152,3 +152,41 @@ func TestLiveServers(t *testing.T) {
 		}
 	}
 }
+
+func TestSingleAddress(t *testing.T) {
+	for _, tc := range []struct {
+		c    Coin
+		a    string
+		good bool
+	}{
+		{Bitcoin, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", true},
+		{Bitcoin, "1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu", true},
+		{Bitcoin, "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", true},
+		{Bitcoin, "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr", true},
+		{Bitcoin, "1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggv", false},
+		{Bitcoin, "LQTpS3VaYTjCr4s9Y1t5zbeY26zevf7Fb3", false},
+		{Litecoin, "LQTpS3VaYTjCr4s9Y1t5zbeY26zevf7Fb3", true},
+		{Litecoin, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", false},
+		{Dogecoin, "DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L", true},
+		{BitcoinCash, "1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu", false},
+	} {
+		if got := tc.c.ValidAddress(tc.a); got != tc.good {
+			t.Errorf("%s %s: %v", tc.c.Name, tc.a, got)
+		}
+	}
+	// A one-address wallet reads that address only.
+	_, srv, a := setup(t)
+	s, err := NewCoin(Bitcoin, source.Config{Values: map[string]string{"address": a["r0"], "esplora_url": srv.URL}, HTTP: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := s.(*Wallet)
+	b.c.pause = 0
+	sc, err := b.scan(context.Background(), nil)
+	if err != nil || len(sc.owned) != 1 || !sc.owned[a["r0"]] {
+		t.Errorf("scan %+v %v", sc, err)
+	}
+	if err := b.Test(context.Background()); err != nil {
+		t.Error(err)
+	}
+}
