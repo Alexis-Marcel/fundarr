@@ -16,6 +16,7 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 
 - **Sources** fetch the full history: trades, converts, deposits and withdrawals (with tx hashes), staking and earn rewards, fees, dust conversions, card purchases. Every amount is an exact decimal.
 - **Reconciliation.** Fundarr replays the history and compares it with what the platform reports. When the two match, the history is complete. When they don't, the gap is shown asset by asset, so you know before your portfolio tracker shows wrong numbers.
+- **Statements.** When an API leaves holes, import the platform's own export (Binance today): it becomes the history for its period, keeping the API's richer details where both agree, and syncs carry on after it.
 - **Destinations** receive new activities after every sync. Each delivery is recorded, so nothing is sent twice and failures are retried.
 - **One small container**: a Go binary with the web UI built in, plus a SQLite file. It runs on a Raspberry Pi.
 
@@ -23,7 +24,7 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 
 | Source | History | Notes |
 |---|---|---|
-| Binance | Since 2017 | Read-only API key. Spot trades (including delisted pairs), converts, Auto-Invest, card and bank purchases, Simple Earn rewards, ETH/SOL staking, distributions, dust, Binance Pay (18 months), P2P (6 months). |
+| Binance | Since 2017 | Read-only API key. Spot trades (including delisted pairs), converts, Auto-Invest, card and bank purchases, Simple Earn rewards, ETH/SOL staking, distributions, dust, Binance Pay (18 months), P2P (6 months). Binance's API does not return every spot trade (orders from the simple Buy/Sell screens are missing): import the Transaction History export once and it becomes the reference for its period. |
 | OKX | Since Feb 2021 | Read-only v5 key. Older trading history comes from OKX's quarterly archives, ready about 2 hours after the first sync. Bank (SEPA) deposits and withdrawals included. Regional domains (EEA, US) detected. |
 | Bitcoin wallet | Full | Extended public key (xpub, ypub, zpub: Ledger, Trezor, Sparrow…). Scans every address type in use; any Esplora server (mempool.space by default, or your own). |
 | Ethereum & EVM wallet | Full | Public address on Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis: ETH, tokens, gas. Blockscout without a key, or Etherscan v2. DEX swaps appear as two legs. |

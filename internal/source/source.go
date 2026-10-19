@@ -31,6 +31,9 @@ type Definition struct {
 	Fields      []Field `json:"fields"`
 	// Setup is shown above the form: how to create a read-only key, etc.
 	Setup string `json:"setup,omitempty"`
+	// Statement, when set, says how to export the platform's own statement
+	// for the connector's Importer (and enables the import in the UI).
+	Statement string `json:"statement,omitempty"`
 	// New builds a connector from its settings (secrets decrypted).
 	New func(cfg Config) (Source, error) `json:"-"`
 }
@@ -65,6 +68,24 @@ type Source interface {
 	Balances(ctx context.Context) ([]model.Balance, error)
 	// State returns what to give back in Config.State next time.
 	State() []byte
+}
+
+// Importer reads a statement exported from the platform (when the API does
+// not tell the whole story). The statement becomes the reference for the
+// period it covers: the engine replaces that period's history with what
+// Import returns, and later syncs ignore API activities inside it.
+type Importer interface {
+	// Import parses the file. existing is the source's current history, so
+	// the connector can keep API activities that describe the same movement
+	// better (transaction hashes, ids, fiat amounts).
+	Import(name string, data []byte, existing []model.Activity) (*Statement, error)
+}
+
+// Statement is what an import produced.
+type Statement struct {
+	From, To   time.Time        // period covered (inclusive)
+	Activities []model.Activity // the whole history of that period
+	Notes      []string         // what the user should know (lines skipped...)
 }
 
 // Tester can be implemented to check credentials when a source is saved.

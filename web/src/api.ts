@@ -15,6 +15,7 @@ export interface SourceDef {
   description: string;
   fields: Field[];
   setup?: string;
+  statement?: string; // how to export the platform's statement (import supported)
 }
 
 export interface DestDef {
@@ -120,6 +121,24 @@ export interface Run {
   log?: string;
 }
 
+export interface Statement {
+  id: number;
+  name: string;
+  from: string;
+  to: string;
+  activities: number;
+  at: string;
+}
+
+export interface ImportResult {
+  from: string;
+  to: string;
+  activities: number;
+  replaced: number;
+  notes: string[] | null;
+  gaps: Gap[] | null;
+}
+
 export interface Session {
   user: string;
   mode: "oidc" | "password" | "proxy" | "none";
@@ -179,6 +198,8 @@ export const api = {
   sync: (id: string, full = false) => call("POST", `/api/sources/${id}/sync`, { full }),
   activities: (id: string, offset: number, limit = 50) =>
     call<{ activities: Activity[]; total: number }>("GET", `/api/sources/${id}/activities?offset=${offset}&limit=${limit}`),
+  statements: (id: string) => call<Statement[]>("GET", `/api/sources/${id}/statements`),
+  importStatement: (id: string, name: string, content: string) => call<ImportResult>("POST", `/api/sources/${id}/import`, { name, content }),
   holdings: (id: string) => call<{ holdings: HoldingLine[]; balancesAt: string }>("GET", `/api/sources/${id}/holdings`),
   destinations: () => call<{ destinations: Destination[]; routes: Route[] }>("GET", "/api/destinations"),
   createDestination: (in_: EntityInput) => call<Destination>("POST", "/api/destinations", in_),

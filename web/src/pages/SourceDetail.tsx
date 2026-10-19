@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, type Activity, type Source, type SourceDef } from "../api";
+import { api, type Activity, type ImportResult, type Source, type SourceDef } from "../api";
 import { KindBadge, StatusDot } from "../components/Badge";
 import { EntityForm } from "../components/EntityForm";
 import { Modal } from "../components/Modal";
@@ -25,6 +25,7 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
   );
   const [tab, setTab] = useState<Tab>("check");
   const [editing, setEditing] = useState(false);
+  const [importing, setImporting] = useState(false);
   const def = defs.find((d) => d.kind === src?.kind);
 
   if (!src) return <section className="page"><p className="muted">Loading…</p></section>;
@@ -52,6 +53,11 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
           >
             {src.running ? "Syncing…" : "Sync now"}
           </button>
+          {def?.statement && (
+            <button className="btn" disabled={src.running} onClick={() => setImporting(true)}>
+              Import statement
+            </button>
+          )}
           <button className="btn" onClick={() => setEditing(true)}>
             Settings
           </button>
@@ -97,9 +103,26 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
         ))}
       </nav>
 
-      {tab === "check" && <Check src={src} />}
+      {tab === "check" && (
+        <>
+          <Statements id={src.id} key={src.lastRun} />
+          <Check src={src} />
+        </>
+      )}
       {tab === "activities" && <Activities id={src.id} running={src.running} />}
       {tab === "runs" && <RunList subject={src.id} />}
+
+      {importing && def?.statement && (
+        <ImportStatement
+          src={src}
+          help={def.statement}
+          onClose={() => setImporting(false)}
+          onDone={() => {
+            reload();
+            setTab("check");
+          }}
+        />
+      )}
 
       {editing && def && (
         <Modal title={`${src.name} settings`} onClose={() => setEditing(false)}>
@@ -150,6 +173,90 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
         </Modal>
       )}
     </section>
+  );
+}
+
+function Statements({ id }: { id: string }) {
+  const { data } = usePoll(() => api.statements(id), 60000, [id]);
+  if (!data || data.length === 0) return null;
+  return (
+    <ul className="statements">
+      {data.map((s) => (
+        <li key={s.id}>
+          <strong>{s.name}</strong>
+          <span className="muted">
+            {new Date(s.from).toLocaleDateString("en", { dateStyle: "medium" })} to {new Date(s.to).toLocaleDateString("en", { dateStyle: "medium" })},{" "}
+            {s.activities.toLocaleString("en")} activities, imported {ago(s.at)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ImportStatement({ src, help, onClose, onDone }: { src: Source; help: string; onClose: () => void; onDone: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [res, setRes] = useState<ImportResult | null>(null);
+  const run = async () => {
+    if (!file) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      setRes(await api.importStatement(src.id, file.name, btoa(bin)));
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={`Import a ${src.name} statement`} onClose={onClose}>
+      {!res ? (
+        <div className="entity-form">
+          <p className="setup">{help}</p>
+          <label className="field">
+            <span>Statement file</span>
+            <input type="file" accept=".csv,text/csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </label>
+          {err && <p className="notice notice-error">{err}</p>}
+          <div className="form-actions">
+            <button className="btn btn-primary" disabled={!file || busy} onClick={run}>
+              {busy ? "Importing…" : "Import"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="entity-form">
+          <p className={res.gaps && res.gaps.length ? "notice notice-error" : "notice notice-ok"}>
+            {res.activities.toLocaleString("en")} activities from {new Date(res.from).toLocaleDateString("en", { dateStyle: "medium" })} to{" "}
+            {new Date(res.to).toLocaleDateString("en", { dateStyle: "medium" })}.{" "}
+            {res.gaps && res.gaps.length
+              ? `${res.gaps.length} asset${res.gaps.length > 1 ? "s" : ""} still differ: ${res.gaps.map((g) => g.asset.symbol).join(", ")}.`
+              : "History and balances now match."}
+          </p>
+          {res.notes && res.notes.length > 0 && (
+            <ul className="notes">
+              {res.notes.map((n) => (
+                <li key={n} className="muted small">
+                  {n}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="form-actions">
+            <button className="btn btn-primary" onClick={onClose}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
