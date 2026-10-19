@@ -4,6 +4,7 @@ import { api, type Activity, type Adjustment, type ImportResult, type Reclassify
 import { KindBadge, StatusDot } from "../components/Badge";
 import { EntityForm } from "../components/EntityForm";
 import { WalletGuide } from "../components/WalletGuide";
+import { AssetName, CryptoIcon } from "../components/CryptoIcon";
 import { walletApp } from "../wallets";
 import { Modal } from "../components/Modal";
 import { RunList } from "./Activity";
@@ -357,7 +358,7 @@ function Check({ src }: { src: Source }) {
           {lines.map((l) => (
             <tr key={l.asset.kind + l.asset.symbol} className={l.gap ? "is-gap" : ""}>
               <td>
-                <strong>{assetLabel(l.asset)}</strong> <small className="muted">{l.asset.kind}</small>
+                <AssetName asset={l.asset} /> {l.asset.kind !== "crypto" && <small className="muted">{l.asset.kind}</small>}
               </td>
               <td className="num">{qty(l.replayed)}</td>
               <td className="num muted">{Number(l.correction) === 0 ? "" : (Number(l.correction) > 0 ? "+" : "") + qty(l.correction)}</td>
@@ -428,7 +429,10 @@ function Activities({ id, running }: { id: string; running: boolean }) {
                 <span className={`tag tag-type tag-${a.type}`}>{a.type === "trade" ? (a.side === "buy" ? "Buy" : "Sell") : (TYPE_LABEL[a.type] ?? a.type)}</span>
               </td>
               <td>
-                {describe(a)}
+                <span className="asset-line">
+                  <CryptoIcon symbol={a.base.asset.symbol || a.base.asset.isin} size={18} />
+                  {describe(a)}
+                </span>
                 {a.nativeId.startsWith("manual:") && (
                   <>
                     {" "}
@@ -523,7 +527,7 @@ function Corrections({
             <tr key={a.id}>
               <td className="nowrap">{day(a.time)}</td>
               <td>
-                <strong>{assetLabel(a.base.asset)}</strong>
+                <AssetName asset={a.base.asset} />
                 <small className="muted note">{a.note}</small>
               </td>
               <td className="num">
