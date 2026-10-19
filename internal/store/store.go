@@ -526,6 +526,16 @@ type Run struct {
 	Log       string    `json:"log,omitempty"`
 }
 
+// CloseInterrupted marks runs left open by a stop or crash as failed.
+func (s *Store) CloseInterrupted(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET ended_at = ?, ok = 0,
+summary = CASE WHEN summary = '' THEN 'interrupted (Fundarr stopped)' ELSE summary || '; interrupted' END WHERE ended_at IS NULL`, ms(time.Now()))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *Store) StartRun(ctx context.Context, kind, subject string) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO runs (kind, subject_id, started_at) VALUES (?, ?, ?)`, kind, subject, ms(time.Now()))
 	if err != nil {

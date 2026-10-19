@@ -118,12 +118,19 @@ func TestStoreFlow(t *testing.T) {
 		t.Fatal("reset")
 	}
 
+	open1, _ := s.StartRun(ctx, "sync", "s1")
+	if n, err := s.CloseInterrupted(ctx); err != nil || n != 1 {
+		t.Fatalf("interrupted %d %v", n, err)
+	}
+	if rs, _ := s.Runs(ctx, "s1", 5); len(rs) != 1 || rs[0].ID != open1 || *rs[0].OK || rs[0].Summary != "interrupted (Fundarr stopped)" {
+		t.Fatalf("closed %+v", rs)
+	}
 	id, _ := s.StartRun(ctx, "sync", "s1")
 	if err := s.EndRun(ctx, id, true, "3 new", "log"); err != nil {
 		t.Fatal(err)
 	}
 	runs, _ := s.Runs(ctx, "s1", 10)
-	if len(runs) != 1 || runs[0].OK == nil || !*runs[0].OK || runs[0].Summary != "3 new" {
+	if len(runs) != 2 || runs[0].OK == nil || !*runs[0].OK || runs[0].Summary != "3 new" {
 		t.Fatalf("runs %+v", runs)
 	}
 
