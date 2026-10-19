@@ -72,11 +72,13 @@ func (s *Server) routes() {
 	})
 	m.HandleFunc("GET /api/session", s.session)
 	m.HandleFunc("POST /api/login", s.auth.handleLogin)
+	m.HandleFunc("POST /api/setup", s.auth.handleSetup)
 	m.HandleFunc("POST /api/logout", s.auth.handleLogout)
 	m.HandleFunc("GET /auth/login", s.auth.handleOIDCStart)
 	m.HandleFunc("GET /auth/callback", s.auth.handleOIDCCallback)
 
 	api := func(pattern string, h http.HandlerFunc) { m.HandleFunc(pattern, s.protect(h)) }
+	api("POST /api/password", s.auth.handleChangePassword)
 	api("GET /api/definitions", s.definitions)
 	api("GET /api/sources", s.listSources)
 	api("POST /api/sources", s.createSource)
@@ -142,7 +144,14 @@ func newID() string {
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"user": s.auth.user(r), "mode": s.auth.cfg.Mode, "version": s.cfg.Version})
+	writeJSON(w, map[string]any{
+		"user":    s.auth.user(r),
+		"mode":    s.auth.cfg.Mode,
+		"setup":   s.auth.needsSetup(r.Context()),
+		"local":   fromPrivateNetwork(r),
+		"fixed":   s.auth.cfg.PasswordHash != "",
+		"version": s.cfg.Version,
+	})
 }
 
 func (s *Server) definitions(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,12 +22,22 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Auth modes: an OpenID Connect provider, a single password, or none (when a
-// reverse proxy in front already authenticates, or on localhost).
+// Auth modes, like the *arr apps:
+//   - password: a username and password created in the UI on first launch
+//     (or fixed by FUNDARR_PASSWORD_HASH);
+//   - oidc: any OpenID Connect provider, with an allowlist;
+//   - proxy: a reverse proxy authenticates and passes the user in a header;
+//   - none: no login at all.
 type AuthConfig struct {
-	Mode string // "oidc", "password" or "none"
+	Mode string // "password", "oidc", "proxy" or "none"
 
+	// Fixed credentials from the environment; when empty, the ones created
+	// in the UI (stored in Credentials) are used.
+	Username     string
 	PasswordHash string // argon2id PHC string
+	Credentials  credentials
+
+	ProxyHeader string // proxy mode: header carrying the user (Remote-User)
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -39,6 +50,17 @@ type AuthConfig struct {
 	SessionKey []byte
 	SessionTTL time.Duration
 }
+
+// credentials stores the account created in the UI.
+type credentials interface {
+	Setting(ctx context.Context, key string) (string, error)
+	PutSetting(ctx context.Context, key, value string) error
+}
+
+const (
+	keyUser = "auth.username"
+	keyHash = "auth.password_hash"
+)
 
 type auth struct {
 	cfg      AuthConfig
@@ -58,9 +80,21 @@ func newAuth(ctx context.Context, cfg AuthConfig) (*auth, error) {
 	a := &auth{cfg: cfg}
 	switch cfg.Mode {
 	case "none":
+	case "proxy":
+		if cfg.ProxyHeader == "" {
+			cfg.ProxyHeader = "Remote-User"
+		}
+		a.cfg.ProxyHeader = cfg.ProxyHeader
 	case "password":
-		if _, _, _, err := parsePHC(cfg.PasswordHash); err != nil {
-			return nil, fmt.Errorf("FUNDARR_PASSWORD_HASH: %w", err)
+		if cfg.PasswordHash != "" {
+			if _, _, _, err := parsePHC(cfg.PasswordHash); err != nil {
+				return nil, fmt.Errorf("FUNDARR_PASSWORD_HASH: %w", err)
+			}
+		} else if cfg.Credentials == nil {
+			return nil, errors.New("password mode needs a credential store")
+		}
+		if a.cfg.Username == "" {
+			a.cfg.Username = "admin"
 		}
 	case "oidc":
 		if cfg.OIDCIssuer == "" || cfg.OIDCClientID == "" || cfg.PublicURL == "" {
@@ -110,8 +144,11 @@ func (a *auth) issue(w http.ResponseWriter, r *http.Request, name string) {
 
 // user returns the signed-in user's name, "" if none.
 func (a *auth) user(r *http.Request) string {
-	if a.cfg.Mode == "none" {
+	switch a.cfg.Mode {
+	case "none":
 		return "admin"
+	case "proxy":
+		return strings.TrimSpace(r.Header.Get(a.cfg.ProxyHeader))
 	}
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
@@ -161,8 +198,30 @@ func parsePHC(s string) (params [3]uint32, salt, hash []byte, err error) {
 	return [3]uint32{m, t, par}, salt, hash, nil
 }
 
-func (a *auth) checkPassword(pw string) bool {
-	params, salt, want, err := parsePHC(a.cfg.PasswordHash)
+// stored returns the username and password hash in effect ("" if none yet).
+func (a *auth) stored(ctx context.Context) (string, string, error) {
+	if a.cfg.PasswordHash != "" {
+		return a.cfg.Username, a.cfg.PasswordHash, nil
+	}
+	user, err := a.cfg.Credentials.Setting(ctx, keyUser)
+	if err != nil {
+		return "", "", err
+	}
+	hash, err := a.cfg.Credentials.Setting(ctx, keyHash)
+	return user, hash, err
+}
+
+// needsSetup is true in password mode until an account exists.
+func (a *auth) needsSetup(ctx context.Context) bool {
+	if a.cfg.Mode != "password" {
+		return false
+	}
+	_, hash, err := a.stored(ctx)
+	return err == nil && hash == ""
+}
+
+func checkPassword(hash, pw string) bool {
+	params, salt, want, err := parsePHC(hash)
 	if err != nil {
 		return false
 	}
@@ -183,20 +242,134 @@ func HashPassword(pw string) string {
 
 func (a *auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.Mode != "password" {
-		http.Error(w, "password login is not enabled", http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "password login is not enabled")
 		return
 	}
 	var body struct {
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !a.checkPassword(body.Password) {
-		time.Sleep(500 * time.Millisecond)
-		writeErr(w, http.StatusUnauthorized, "wrong password")
+	user, hash, err := a.stored(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.issue(w, r, "admin")
-	writeJSON(w, map[string]any{"user": "admin"})
+	if json.NewDecoder(r.Body).Decode(&body) != nil || hash == "" ||
+		!strings.EqualFold(strings.TrimSpace(body.Username), user) || !checkPassword(hash, body.Password) {
+		time.Sleep(500 * time.Millisecond)
+		writeErr(w, http.StatusUnauthorized, "wrong username or password")
+		return
+	}
+	a.issue(w, r, user)
+	writeJSON(w, map[string]any{"user": user})
 }
+
+// handleSetup creates the account on first launch. Until then only requests
+// from a private network are accepted, so a stranger cannot claim an
+// instance that was exposed to the internet before being set up.
+func (a *auth) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if !a.needsSetup(r.Context()) {
+		writeErr(w, http.StatusConflict, "an account already exists")
+		return
+	}
+	if !fromPrivateNetwork(r) {
+		writeErr(w, http.StatusForbidden, "create the account from your local network, or set FUNDARR_PASSWORD_HASH")
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	user := strings.TrimSpace(body.Username)
+	if user == "" || len(user) > 64 {
+		writeErr(w, http.StatusUnprocessableEntity, "choose a username")
+		return
+	}
+	if len(body.Password) < 8 {
+		writeErr(w, http.StatusUnprocessableEntity, "the password needs at least 8 characters")
+		return
+	}
+	if err := a.cfg.Credentials.PutSetting(r.Context(), keyUser, user); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.cfg.Credentials.PutSetting(r.Context(), keyHash, HashPassword(body.Password)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.issue(w, r, user)
+	writeJSON(w, map[string]any{"user": user})
+}
+
+// handleChangePassword replaces the password of the account created in the UI.
+func (a *auth) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	if a.cfg.Mode != "password" {
+		writeErr(w, http.StatusNotFound, "password login is not enabled")
+		return
+	}
+	if a.cfg.PasswordHash != "" {
+		writeErr(w, http.StatusConflict, "the password is set by FUNDARR_PASSWORD_HASH; change it there")
+		return
+	}
+	var body struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	_, hash, err := a.stored(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !checkPassword(hash, body.Current) {
+		time.Sleep(500 * time.Millisecond)
+		writeErr(w, http.StatusForbidden, "the current password is wrong")
+		return
+	}
+	if len(body.New) < 8 {
+		writeErr(w, http.StatusUnprocessableEntity, "the password needs at least 8 characters")
+		return
+	}
+	if err := a.cfg.Credentials.PutSetting(r.Context(), keyHash, HashPassword(body.New)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// fromPrivateNetwork is true when the client and every proxy it went
+// through (X-Forwarded-For, X-Real-Ip) have private or loopback addresses.
+func fromPrivateNetwork(r *http.Request) bool {
+	addrs := []string{r.RemoteAddr}
+	for _, h := range []string{"X-Forwarded-For", "X-Real-Ip"} {
+		for _, v := range strings.Split(r.Header.Get(h), ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				addrs = append(addrs, v)
+			}
+		}
+	}
+	for _, a := range addrs {
+		host := a
+		if h, _, err := net.SplitHostPort(a); err == nil {
+			host = h
+		}
+		ip := net.ParseIP(strings.Trim(host, "[]"))
+		if ip == nil || !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || cgnat.Contains(ip)) {
+			return false
+		}
+	}
+	return true
+}
+
+// Tailscale and other carrier-grade NAT addresses count as private.
+var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
 
 func randomString() string {
 	b := make([]byte, 24)

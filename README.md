@@ -34,6 +34,14 @@ Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)),
 
 ## Run it
 
+```sh
+docker run -d --name fundarr -p 9494:9494 -v ./fundarr:/data ghcr.io/alexis-marcel/fundarr:latest
+```
+
+Open http://localhost:9494 and create your account, as in Sonarr or Prowlarr. For safety, the account can only be created from your local network or VPN.
+
+Or with Compose:
+
 ```yaml
 services:
   fundarr:
@@ -41,21 +49,24 @@ services:
     restart: unless-stopped
     ports: ["9494:9494"]
     volumes: ["./fundarr:/data"]
-    environment:
-      FUNDARR_PASSWORD_HASH: "$$argon2id$$v=19$$m=65536,t=3,p=2$$…"   # docker run --rm -it ghcr.io/alexis-marcel/fundarr hash-password
 ```
 
 On first start, Fundarr creates `/data/secret.key`, which encrypts the API keys stored in `/data/fundarr.db`. **Back up both together.** Without the key, the stored credentials cannot be read.
 
-### Settings
+### Sign-in
+
+| | |
+|---|---|
+| **Username and password** (default) | Created in the UI on first launch; change it in Settings. |
+| **Single sign-on** | Any OpenID Connect provider (Authentik, Authelia, Keycloak, PocketID…): set `FUNDARR_OIDC_ISSUER`, `FUNDARR_OIDC_CLIENT_ID`, `FUNDARR_OIDC_CLIENT_SECRET`, `FUNDARR_URL`, and who may sign in with `FUNDARR_OIDC_ALLOWED_SUBS` or `FUNDARR_OIDC_ALLOWED_EMAILS` (comma-separated; emails must be verified). Redirect URI: `<FUNDARR_URL>/auth/callback`. |
+| **Reverse proxy** | `FUNDARR_AUTH=proxy`: your proxy (Authelia, Authentik outpost…) authenticates and passes the user in `Remote-User` (or `FUNDARR_PROXY_HEADER`). Fundarr then must only be reachable through that proxy. |
+| **None** | `FUNDARR_AUTH=none`, for a machine only you can reach. |
+
+### Other settings
 
 | Variable | |
 |---|---|
-| `FUNDARR_PASSWORD_HASH` | Argon2id hash of the password (`fundarr hash-password`). |
-| `FUNDARR_OIDC_ISSUER`, `FUNDARR_OIDC_CLIENT_ID`, `FUNDARR_OIDC_CLIENT_SECRET` | Single sign-on with any OpenID Connect provider (Authentik, Authelia, Keycloak, PocketID…). Redirect URI: `<FUNDARR_URL>/auth/callback`. |
-| `FUNDARR_OIDC_ALLOWED_SUBS` / `FUNDARR_OIDC_ALLOWED_EMAILS` | Required with OIDC: who may sign in (comma-separated). A verified email is required for email matching. |
-| `FUNDARR_URL` | Public URL, e.g. `https://fundarr.example.com`. |
-| `FUNDARR_AUTH=none` | No login, for when a reverse proxy in front already authenticates. |
+| `FUNDARR_PASSWORD_HASH`, `FUNDARR_USERNAME` | Fix the credentials from the environment instead of the UI (`docker run --rm -it ghcr.io/alexis-marcel/fundarr hash-password`; in Compose, double every `$`). |
 | `FUNDARR_SECRET_KEY` | Master key in base64 (`openssl rand -base64 32`), instead of the key file. |
 | `FUNDARR_DATA`, `FUNDARR_ADDR` | Data directory (`/data`) and listen address (`:9494`). |
 
@@ -71,7 +82,7 @@ On first start, Fundarr creates `/data/secret.key`, which encrypts the API keys 
 ```sh
 go test ./...                          # engine, connectors, API
 cd web && npm install && npm run dev   # UI on :5173, API proxied to :9494
-FUNDARR_AUTH=none FUNDARR_ADDR=127.0.0.1:9494 go run ./cmd/fundarr
+FUNDARR_DATA=./data FUNDARR_ADDR=127.0.0.1:9494 go run ./cmd/fundarr
 ```
 
 ## License

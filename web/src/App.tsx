@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { api, type DestDef, type Session, type SourceDef } from "./api";
 import { ActivityPage } from "./pages/Activity";
+import { SettingsPage } from "./pages/Settings";
 import { DestinationsPage } from "./pages/Destinations";
 import { SourceDetail } from "./pages/SourceDetail";
 import { SourcesPage } from "./pages/Sources";
@@ -24,34 +25,84 @@ export function App() {
 }
 
 function Login({ session, onIn }: { session: Session; onIn: () => void }) {
+  const [user, setUser] = useState(session.setup ? "admin" : "");
   const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
   const [err, setErr] = useState(() => new URLSearchParams(window.location.search).get("error"));
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    setErr(null);
+    if (session.setup && pw !== pw2) {
+      setErr("The two passwords differ.");
+      return;
+    }
     try {
-      await api.login(pw);
+      if (session.setup) await api.setup(user, pw);
+      else await api.login(user, pw);
+      window.history.replaceState(null, "", "/");
       onIn();
     } catch (x) {
       setErr((x as Error).message);
     }
   };
+
+  if (session.mode === "proxy")
+    return (
+      <div className="center">
+        <div className="login">
+          <Wordmark />
+          <p className="notice notice-error">The proxy in front of Fundarr did not say who you are. Sign in through it, or check its Remote-User header.</p>
+        </div>
+      </div>
+    );
+
   return (
     <div className="center">
       <div className="login">
         <Wordmark />
-        <p className="muted">Your exchanges, brokers and wallets, synced into the tools you use.</p>
+        {session.setup ? (
+          <>
+            <h1 className="login-title">Create your account</h1>
+            <p className="muted">Fundarr will hold read-only keys to your exchanges. Choose the username and password that protect them.</p>
+          </>
+        ) : (
+          <p className="muted">Your exchanges, brokers and wallets, synced into the tools you use.</p>
+        )}
         {err && <p className="notice notice-error">{err}</p>}
         {session.mode === "oidc" ? (
           <a className="btn btn-primary btn-block" href="/auth/login">
             Sign in
           </a>
+        ) : session.setup && !session.local ? (
+          <p className="notice notice-error">
+            For safety, the account can only be created from your local network or VPN. Open Fundarr from there, or set FUNDARR_PASSWORD_HASH.
+          </p>
         ) : (
           <form onSubmit={submit} className="login-form">
             <label className="field">
-              <span>Password</span>
-              <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoFocus autoComplete="current-password" />
+              <span>Username</span>
+              <input value={user} onChange={(e) => setUser(e.target.value)} autoFocus={!session.setup} autoComplete="username" required />
             </label>
-            <button className="btn btn-primary btn-block">Sign in</button>
+            <label className="field">
+              <span>Password</span>
+              <input
+                type="password"
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                autoFocus={session.setup}
+                autoComplete={session.setup ? "new-password" : "current-password"}
+                minLength={session.setup ? 8 : undefined}
+                required
+              />
+              {session.setup && <small>At least 8 characters.</small>}
+            </label>
+            {session.setup && (
+              <label className="field">
+                <span>Password again</span>
+                <input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} autoComplete="new-password" required />
+              </label>
+            )}
+            <button className="btn btn-primary btn-block">{session.setup ? "Create account" : "Sign in"}</button>
           </form>
         )}
       </div>
@@ -92,10 +143,11 @@ function Shell({ session }: { session: Session }) {
           <NavLink to="/sources">Sources</NavLink>
           <NavLink to="/destinations">Destinations</NavLink>
           <NavLink to="/activity">Activity log</NavLink>
+          <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="nav-foot">
           <span className="muted small">{session.user}</span>
-          {session.mode !== "none" && (
+          {(session.mode === "password" || session.mode === "oidc") && (
             <button
               className="link small"
               onClick={async () => {
@@ -117,6 +169,7 @@ function Shell({ session }: { session: Session }) {
             <Route path="/sources/:id" element={<SourceDetail defs={defs.sources} />} />
             <Route path="/destinations" element={<DestinationsPage defs={defs.destinations} />} />
             <Route path="/activity" element={<ActivityPage names={names} />} />
+            <Route path="/settings" element={<SettingsPage session={session} />} />
             <Route path="*" element={<Navigate to="/sources" replace />} />
           </Routes>
         )}

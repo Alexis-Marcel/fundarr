@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS runs (
 	log        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS runs_subject ON runs(subject_id, id);
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
 `
 
 func Open(path string) (*Store, error) {
@@ -112,6 +116,24 @@ func fromMs(v sql.NullInt64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(v.Int64).UTC()
+}
+
+// ---- settings
+
+// Setting returns a stored setting, "" when unset.
+func (s *Store) Setting(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+func (s *Store) PutSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)
+ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
 }
 
 // ---- sources and destinations
