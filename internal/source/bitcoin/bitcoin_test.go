@@ -420,3 +420,31 @@ func TestClientRetriesAndErrors(t *testing.T) {
 		t.Error("sleepCtx")
 	}
 }
+
+func TestClientFailsOverToNextServer(t *testing.T) {
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	down.Close() // refuses connections, like a blocked host
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	defer busy.Close()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"chain_stats":{"tx_count":3}}`)
+	}))
+	defer up.Close()
+	c := &client{base: down.URL, fallback: []string{busy.URL, up.URL}, http: up.Client(),
+		sleep: func(ctx context.Context, d time.Duration) error { return ctx.Err() }}
+	s, err := c.address(context.Background(), "x")
+	if err != nil || s.Chain.TxCount != 3 || c.base != up.URL {
+		t.Fatalf("failover: %v %+v %s", err, s, c.base)
+	}
+	// Past the last server, the error comes back.
+	c = &client{base: down.URL, http: up.Client(), sleep: func(ctx context.Context, d time.Duration) error { return nil }}
+	if _, err := c.address(context.Background(), "x"); err == nil {
+		t.Error("no server left must fail")
+	}
+	// The default comes with a fallback; a server the user chose does not.
+	s1, _ := New(source.Config{Values: map[string]string{"xpub": zpub84}})
+	s2, _ := New(source.Config{Values: map[string]string{"xpub": zpub84, "esplora_url": "https://my.node/api"}})
+	if len(s1.(*Bitcoin).c.fallback) == 0 || len(s2.(*Bitcoin).c.fallback) != 0 {
+		t.Error("fallback only for the default")
+	}
+}

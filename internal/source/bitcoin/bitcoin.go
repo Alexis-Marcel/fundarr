@@ -20,6 +20,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// fallbackEsplora: public servers tried when the default does not answer.
+var fallbackEsplora = []string{"https://blockstream.info/api"}
+
 const (
 	defaultEsplora = "https://mempool.space/api"
 	// GapLimit is how many unused addresses in a row end a chain (BIP44).
@@ -37,7 +40,7 @@ func init() {
 			{Name: "xpub", Label: "Extended public key", Secret: true,
 				Help: "xpub, ypub or zpub of the account. Ledger Live: account → ⋯ → Edit account → Advanced"},
 			{Name: "esplora_url", Label: "Esplora API", Optional: true,
-				Help: "default https://mempool.space/api; point to your own mempool/electrs for privacy"},
+				Help: "default https://mempool.space/api, then https://blockstream.info/api if it does not answer; point to your own mempool/electrs for privacy"},
 		},
 		Setup: "Fundarr only reads the account's extended public key: it can list addresses and transactions, never spend. " +
 			"Never type your 24 words anywhere but on the device itself. An extended public key reveals the whole history " +
@@ -122,8 +125,9 @@ func New(cfg source.Config) (source.Source, error) {
 		return nil, err
 	}
 	base := strings.TrimRight(strings.TrimSpace(cfg.Get("esplora_url")), "/")
+	var fallback []string
 	if base == "" {
-		base = defaultEsplora
+		base, fallback = defaultEsplora, append([]string(nil), fallbackEsplora...)
 	} else if !strings.HasPrefix(base, "http") {
 		base = "https://" + base
 	}
@@ -132,7 +136,7 @@ func New(cfg source.Config) (source.Source, error) {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
 	b := &Bitcoin{key: key, types: types, now: time.Now,
-		c: &client{base: base, http: hc, pause: 120 * time.Millisecond, sleep: sleepCtx}}
+		c: &client{base: base, fallback: fallback, http: hc, pause: 120 * time.Millisecond, sleep: sleepCtx}}
 	if len(cfg.State) > 0 {
 		_ = json.Unmarshal(cfg.State, &b.st)
 	}
