@@ -122,7 +122,10 @@ export interface Run {
 
 export interface Session {
   user: string;
-  mode: "oidc" | "password" | "none";
+  mode: "oidc" | "password" | "proxy" | "none";
+  setup: boolean; // no account yet: show the create-account screen
+  local: boolean; // the request comes from a private network
+  fixed: boolean; // password set by FUNDARR_PASSWORD_HASH
   version: string;
 }
 
@@ -145,7 +148,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    if (res.status === 401 && path !== "/api/login") window.dispatchEvent(new Event("fundarr:signedout"));
+    if (res.status === 401 && path !== "/api/login" && path !== "/api/setup") window.dispatchEvent(new Event("fundarr:signedout"));
     throw new ApiError(res.status, data?.error ?? res.statusText);
   }
   return data as T;
@@ -162,7 +165,9 @@ export interface EntityInput {
 
 export const api = {
   session: () => call<Session>("GET", "/api/session"),
-  login: (password: string) => call<{ user: string }>("POST", "/api/login", { password }),
+  login: (username: string, password: string) => call<{ user: string }>("POST", "/api/login", { username, password }),
+  setup: (username: string, password: string) => call<{ user: string }>("POST", "/api/setup", { username, password }),
+  changePassword: (current: string, next: string) => call("POST", "/api/password", { current, new: next }),
   logout: () => call<{ redirect: string }>("POST", "/api/logout", {}),
   definitions: () => call<{ sources: SourceDef[]; destinations: DestDef[] }>("GET", "/api/definitions"),
   sources: () => call<Source[]>("GET", "/api/sources"),

@@ -68,6 +68,10 @@ func init() {
 }
 
 func setup(t *testing.T, mode string) (*httptest.Server, *engine.Engine, *http.Client) {
+	return setupWith(t, AuthConfig{Mode: mode, PasswordHash: HashPassword("correct horse")})
+}
+
+func setupWith(t *testing.T, ac AuthConfig) (*httptest.Server, *engine.Engine, *http.Client) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "f.db"))
 	if err != nil {
@@ -76,9 +80,11 @@ func setup(t *testing.T, mode string) (*httptest.Server, *engine.Engine, *http.C
 	t.Cleanup(func() { st.Close() })
 	box, _ := secret.New(bytes.Repeat([]byte{9}, 32))
 	eng := engine.New(st, box, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ac.SessionKey = box.Key("s")
+	ac.Credentials = st
 	srv, err := New(context.Background(), Config{Engine: eng, Version: "test",
 		Static: fstest.MapFS{"index.html": {Data: []byte("<html>ui</html>")}, "assets/a.js": {Data: []byte("js")}},
-		Auth:   AuthConfig{Mode: mode, PasswordHash: HashPassword("correct horse"), SessionKey: box.Key("s")}})
+		Auth:   ac})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +137,13 @@ func TestPasswordAuthAndGuards(t *testing.T) {
 	if code := do(t, c, "GET", ts.URL+"/api/sources", nil, nil); code != 401 {
 		t.Fatalf("unauthenticated %d", code)
 	}
-	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"password": "nope"}, nil); code != 401 {
+	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"username": "admin", "password": "nope"}, nil); code != 401 {
 		t.Fatalf("bad password %d", code)
 	}
-	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"password": "correct horse"}, nil); code != 200 {
+	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"username": "someone", "password": "correct horse"}, nil); code != 401 {
+		t.Fatalf("bad user %d", code)
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"username": "Admin", "password": "correct horse"}, nil); code != 200 {
 		t.Fatalf("login %d", code)
 	}
 	do(t, c, "GET", ts.URL+"/api/session", nil, &sess)
@@ -307,6 +316,69 @@ func TestSourcesDestinationsRoutes(t *testing.T) {
 	do(t, c, "GET", ts.URL+"/api/sources", nil, &list)
 	if len(list) != 0 {
 		t.Fatal("deleted")
+	}
+}
+
+func TestFirstRunSetup(t *testing.T) {
+	ts, _, c := setupWith(t, AuthConfig{Mode: "password"})
+	var sess map[string]any
+	do(t, c, "GET", ts.URL+"/api/session", nil, &sess)
+	if sess["setup"] != true || sess["local"] != true || sess["fixed"] != false {
+		t.Fatalf("session %v", sess)
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"username": "admin", "password": "whatever1"}, nil); code != 401 {
+		t.Fatal("no login before setup")
+	}
+	// From the internet (through a proxy): refused.
+	b, _ := json.Marshal(map[string]string{"username": "me", "password": "longenough"})
+	req, _ := http.NewRequest("POST", ts.URL+"/api/setup", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.2")
+	if resp, _ := c.Do(req); resp.StatusCode != 403 {
+		t.Fatalf("public setup %d", resp.StatusCode)
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/setup", map[string]string{"username": "me", "password": "short"}, nil); code != 422 {
+		t.Fatal("short password")
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/setup", map[string]string{"username": " me ", "password": "longenough"}, nil); code != 200 {
+		t.Fatalf("setup %d", code)
+	}
+	do(t, c, "GET", ts.URL+"/api/session", nil, &sess)
+	if sess["user"] != "me" || sess["setup"] != false {
+		t.Fatalf("after setup %v", sess)
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/setup", map[string]string{"username": "x", "password": "longenough"}, nil); code != 409 {
+		t.Fatal("setup only once")
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/password", map[string]string{"current": "wrong", "new": "newpassword"}, nil); code != 403 {
+		t.Fatal("current password checked")
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/password", map[string]string{"current": "longenough", "new": "newpassword"}, nil); code != 200 {
+		t.Fatal("change password")
+	}
+	c2 := &http.Client{}
+	jar, _ := cookiejar.New(nil)
+	c2.Jar = jar
+	if code := do(t, c2, "POST", ts.URL+"/api/login", map[string]string{"username": "ME", "password": "newpassword"}, nil); code != 200 {
+		t.Fatal("login with new password")
+	}
+}
+
+func TestProxyMode(t *testing.T) {
+	ts, _, c := setupWith(t, AuthConfig{Mode: "proxy"})
+	if code := do(t, c, "GET", ts.URL+"/api/sources", nil, nil); code != 401 {
+		t.Fatal("no header, no access")
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/api/session", nil)
+	req.Header.Set("Remote-User", "alice")
+	resp, _ := c.Do(req)
+	var sess map[string]any
+	json.NewDecoder(resp.Body).Decode(&sess)
+	if sess["user"] != "alice" || sess["mode"] != "proxy" {
+		t.Fatalf("proxy session %v", sess)
+	}
+	if !fromPrivateNetwork(&http.Request{RemoteAddr: "100.92.1.2:5"}) || fromPrivateNetwork(&http.Request{RemoteAddr: "8.8.8.8:5"}) || fromPrivateNetwork(&http.Request{RemoteAddr: "garbage"}) {
+		t.Fatal("private network detection")
 	}
 }
 

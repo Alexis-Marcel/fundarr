@@ -93,15 +93,13 @@ func run(log *slog.Logger) error {
 	defer stop()
 
 	eng := engine.New(st, box, log)
+	// Like the *arr apps: a username and password created on first launch,
+	// unless single sign-on or a proxy is configured.
 	mode := env("FUNDARR_AUTH", "")
 	if mode == "" {
-		switch {
-		case os.Getenv("FUNDARR_OIDC_ISSUER") != "":
+		mode = "password"
+		if os.Getenv("FUNDARR_OIDC_ISSUER") != "" {
 			mode = "oidc"
-		case os.Getenv("FUNDARR_PASSWORD_HASH") != "":
-			mode = "password"
-		default:
-			return errors.New("set FUNDARR_OIDC_ISSUER (single sign-on), FUNDARR_PASSWORD_HASH (`fundarr hash-password`), or FUNDARR_AUTH=none if a proxy in front already authenticates")
 		}
 	}
 	static, err := fs.Sub(web.Dist, "dist")
@@ -116,7 +114,10 @@ func run(log *slog.Logger) error {
 		Background: ctx,
 		Auth: server.AuthConfig{
 			Mode:             mode,
+			Username:         env("FUNDARR_USERNAME", "admin"),
 			PasswordHash:     os.Getenv("FUNDARR_PASSWORD_HASH"),
+			Credentials:      st,
+			ProxyHeader:      env("FUNDARR_PROXY_HEADER", "Remote-User"),
 			OIDCIssuer:       os.Getenv("FUNDARR_OIDC_ISSUER"),
 			OIDCClientID:     os.Getenv("FUNDARR_OIDC_CLIENT_ID"),
 			OIDCClientSecret: os.Getenv("FUNDARR_OIDC_CLIENT_SECRET"),

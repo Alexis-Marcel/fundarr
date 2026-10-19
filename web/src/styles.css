@@ -798,3 +798,28 @@ input[type="date"] {
     display: none;
   }
 }
+
+/* ---- login and settings */
+
+.login-title {
+  font-size: 1.4rem;
+}
+.settings-card {
+  max-width: 640px;
+  gap: 1.5rem;
+}
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+}
+.facts dt {
+  color: var(--muted);
+}
+.facts dd {
+  margin: 0;
+}
+.narrow {
+  max-width: 380px;
+}
