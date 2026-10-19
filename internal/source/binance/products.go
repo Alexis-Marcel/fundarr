@@ -158,8 +158,19 @@ func ok(status string) bool {
 // paid with sourceAsset; the fee is taken out of the source amount.
 func (r *run) autoInvest(ctx context.Context) error {
 	from, to := r.clamp(autoInvestStart, 0)
-	p := pager{path: "/sapi/v1/lending/auto-invest/history/list", params: url.Values{"planType": {"ALL"}}, window: 29 * 24 * time.Hour}
-	return r.walk(ctx, p, from, to, func(raw json.RawMessage) error {
+	// The docs list planType=ALL, but the live API rejects it as malformed
+	// (-1102): ask for each plan type.
+	for _, plan := range []string{"SINGLE", "PORTFOLIO", "INDEX"} {
+		p := pager{path: "/sapi/v1/lending/auto-invest/history/list", params: url.Values{"planType": {plan}}, window: 29 * 24 * time.Hour}
+		if err := r.walk(ctx, p, from, to, r.autoInvestRow); err != nil {
+			return fmt.Errorf("%s plans: %w", strings.ToLower(plan), err)
+		}
+	}
+	return nil
+}
+
+func (r *run) autoInvestRow(raw json.RawMessage) error {
+	{
 		var x struct {
 			ID                  int64  `json:"id"`
 			TargetAsset         string `json:"targetAsset"`
@@ -197,7 +208,7 @@ func (r *run) autoInvest(ctx context.Context) error {
 			Fee:      fee,
 			Note:     note,
 		})
-	})
+	}
 }
 
 // ---- Simple Earn rewards
@@ -208,30 +219,34 @@ func (r *run) autoInvest(ctx context.Context) error {
 func (r *run) earnRewards(ctx context.Context) error {
 	from, to := r.clamp(simpleEarnStart, 0)
 	window := 29 * 24 * time.Hour // documented: at most 30 days
-	err := r.walk(ctx, pager{path: "/sapi/v1/simple-earn/flexible/history/rewardsRecord", window: window}, from, to, func(raw json.RawMessage) error {
-		var x struct {
-			Asset     string `json:"asset"`
-			Rewards   string `json:"rewards"`
-			ProjectID string `json:"projectId"`
-			Type      string `json:"type"`
-			Time      int64  `json:"time"`
-		}
-		if err := json.Unmarshal(raw, &x); err != nil {
-			return err
-		}
-		if dec(x.Rewards).Sign() <= 0 {
-			return nil
-		}
-		return r.emit(model.Activity{
-			NativeID: fmt.Sprintf("earn-flexible:%s:%s:%s:%d", x.ProjectID, x.Asset, x.Type, x.Time),
-			Time:     time.UnixMilli(x.Time),
-			Type:     model.Reward,
-			Base:     amt(x.Asset, x.Rewards),
-			Note:     strings.TrimSpace("Simple Earn flexible " + strings.ToLower(x.Type)),
+	// type is mandatory on the live API: real-time APR interest and tiered
+	// bonus are separate records.
+	for _, typ := range []string{"REALTIME", "BONUS"} {
+		err := r.walk(ctx, pager{path: "/sapi/v1/simple-earn/flexible/history/rewardsRecord", params: url.Values{"type": {typ}}, window: window}, from, to, func(raw json.RawMessage) error {
+			var x struct {
+				Asset     string `json:"asset"`
+				Rewards   string `json:"rewards"`
+				ProjectID string `json:"projectId"`
+				Type      string `json:"type"`
+				Time      int64  `json:"time"`
+			}
+			if err := json.Unmarshal(raw, &x); err != nil {
+				return err
+			}
+			if dec(x.Rewards).Sign() <= 0 {
+				return nil
+			}
+			return r.emit(model.Activity{
+				NativeID: fmt.Sprintf("earn-flexible:%s:%s:%s:%d", x.ProjectID, x.Asset, x.Type, x.Time),
+				Time:     time.UnixMilli(x.Time),
+				Type:     model.Reward,
+				Base:     amt(x.Asset, x.Rewards),
+				Note:     strings.TrimSpace("Simple Earn flexible " + strings.ToLower(x.Type)),
+			})
 		})
-	})
-	if err != nil {
-		return err
+		if err != nil {
+			return fmt.Errorf("flexible %s: %w", strings.ToLower(typ), err)
+		}
 	}
 	return r.walk(ctx, pager{path: "/sapi/v1/simple-earn/locked/history/rewardsRecord", window: window}, from, to, func(raw json.RawMessage) error {
 		var x struct {

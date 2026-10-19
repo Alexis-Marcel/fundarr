@@ -330,11 +330,14 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case "/sapi/v1/lending/auto-invest/history/list":
 		f.windowCheck(r, "startTime", 30*24*time.Hour)
-		if q.Get("planType") != "ALL" {
-			f.t.Errorf("auto-invest planType %q", q.Get("planType"))
+		// Like the live API: ALL is refused, plan types are asked one by one.
+		if q.Get("planType") == "ALL" || q.Get("planType") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"code":-1102,"msg":"Mandatory parameter 'planType' was not sent, was empty/null, or malformed."}`)
+			return
 		}
 		rows := []map[string]any{}
-		if inRange(r, msAt(2025, 5, 1), "startTime") {
+		if q.Get("planType") == "SINGLE" && inRange(r, msAt(2025, 5, 1), "startTime") {
 			rows = append(rows,
 				map[string]any{"id": 12345, "targetAsset": "SOL", "planType": "SINGLE", "planName": "SOL", "planId": 1234,
 					"transactionDateTime": msAt(2025, 5, 1), "transactionStatus": "SUCCESS", "failedType": "", "sourceAsset": "USDT",
@@ -347,8 +350,13 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(map[string]any{"total": len(rows), "list": rows})
 	case "/sapi/v1/simple-earn/flexible/history/rewardsRecord":
 		f.windowCheck(r, "startTime", 30*24*time.Hour)
+		if q.Get("type") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"code":-1102,"msg":"Mandatory parameter 'type' was not sent, was empty/null, or malformed."}`)
+			return
+		}
 		rows := []map[string]any{}
-		if inRange(r, msAt(2025, 3, 1), "startTime") {
+		if q.Get("type") == "REALTIME" && inRange(r, msAt(2025, 3, 1), "startTime") {
 			rows = append(rows, map[string]any{"asset": "USDT", "rewards": "1.5", "projectId": "USDT001", "type": "REALTIME", "time": msAt(2025, 3, 1)})
 		}
 		write(map[string]any{"rows": rows, "total": len(rows)})
