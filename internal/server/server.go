@@ -333,11 +333,11 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 422, "this saved account can only be checked from its source")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	bal, err := d.Preview(ctx, val, source.Config{Values: settings, HTTP: s.eng.HTTP})
 	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-		writeErr(w, 422, "too long to read here; the sync reads it fully")
+		writeErr(w, 422, "still reading after a minute; the sync will read it fully")
 		return
 	}
 	if err != nil {
