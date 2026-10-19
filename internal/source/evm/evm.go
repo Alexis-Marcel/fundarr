@@ -49,17 +49,21 @@ type Chain struct {
 	// API, when set, replaces Blockscout: another Etherscan-compatible
 	// explorer for networks Blockscout does not index.
 	API string
+	// KeyOnly: no free explorer indexes it; read only through Etherscan v2,
+	// with a key whose plan covers it.
+	KeyOnly bool
 }
 
 var chains = map[string]Chain{
-	"ethereum": {"ethereum", 1, "eth.blockscout.com", "ETH", 18, ""},
-	"arbitrum": {"arbitrum", 42161, "arbitrum.blockscout.com", "ETH", 18, ""},
-	"base":     {"base", 8453, "base.blockscout.com", "ETH", 18, ""},
-	"optimism": {"optimism", 10, "optimism.blockscout.com", "ETH", 18, ""},
-	"polygon":  {"polygon", 137, "polygon.blockscout.com", "POL", 18, ""},
-	"gnosis":   {"gnosis", 100, "gnosis.blockscout.com", "XDAI", 18, ""},
+	"ethereum": {"ethereum", 1, "eth.blockscout.com", "ETH", 18, "", false},
+	"arbitrum": {"arbitrum", 42161, "arbitrum.blockscout.com", "ETH", 18, "", false},
+	"base":     {"base", 8453, "base.blockscout.com", "ETH", 18, "", false},
+	"optimism": {"optimism", 10, "optimism.blockscout.com", "ETH", 18, "", false},
+	"polygon":  {"polygon", 137, "polygon.blockscout.com", "POL", 18, "", false},
+	"gnosis":   {"gnosis", 100, "gnosis.blockscout.com", "XDAI", 18, "", false},
 	"avalanche": {"avalanche", 43114, "", "AVAX", 18,
-		"https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api"},
+		"https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api", false},
+	"bsc": {"bsc", 56, "", "BNB", 18, "", true},
 }
 
 // All is the "chains" value that reads every supported network.
@@ -89,7 +93,7 @@ func init() {
 			{Name: "chains", Label: "Networks", Optional: true,
 				Help: "comma-separated, or all; default ethereum. Available: " + strings.Join(chainNames(), ", ")},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true,
-				Help: "optional: uses Etherscan v2 instead of Blockscout (free key at etherscan.io)"},
+				Help: "optional: uses Etherscan v2 instead of Blockscout where the key's plan allows (free key at etherscan.io); required for bsc"},
 		},
 		Setup: "Fundarr only reads the public history of the address: nothing to sign, no permission to give. " +
 			"In Ledger Live, open the Ethereum account and copy its receive address (0x…). " +
@@ -110,8 +114,15 @@ func New(cfg source.Config) (source.Source, error) {
 	if strings.TrimSpace(raw) == "" {
 		raw = "ethereum"
 	}
+	key := strings.TrimSpace(cfg.Get("etherscan_key"))
 	if strings.EqualFold(strings.TrimSpace(raw), All) {
-		raw = strings.Join(chainNames(), ",")
+		var ns []string
+		for _, n := range chainNames() {
+			if !chains[n].KeyOnly || key != "" {
+				ns = append(ns, n)
+			}
+		}
+		raw = strings.Join(ns, ",")
 	}
 	for _, n := range strings.Split(raw, ",") {
 		n = strings.ToLower(strings.TrimSpace(n))
@@ -121,6 +132,9 @@ func New(cfg source.Config) (source.Source, error) {
 		c, ok := chains[n]
 		if !ok {
 			return nil, fmt.Errorf("evm: unknown network %q (available: %s)", n, strings.Join(chainNames(), ", "))
+		}
+		if c.KeyOnly && key == "" {
+			return nil, fmt.Errorf("evm: %s has no free explorer: add an Etherscan API key whose plan covers it", n)
 		}
 		seen[n] = true
 		cs = append(cs, c)
@@ -262,6 +276,9 @@ type client struct {
 
 	mu   sync.Mutex
 	last time.Time
+	// free: networks the key's plan does not cover, read from their free
+	// explorer instead.
+	free map[string]bool
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -300,12 +317,16 @@ func isRateLimit(m string) bool {
 // get calls module=account&action=… for a chain and decodes result into out.
 func (c *client) get(ctx context.Context, ch Chain, q url.Values, out any) error {
 	base := c.blockscout(ch)
-	// The key is for Etherscan, whose free tier does not cover the networks
-	// read from another explorer.
-	if c.key != "" && ch.API == "" {
+	c.mu.Lock()
+	viaKey := c.key != "" && (ch.KeyOnly || ch.API == "" && !c.free[ch.Name])
+	c.mu.Unlock()
+	if viaKey {
 		base = c.etherscan
 		q.Set("chainid", strconv.Itoa(ch.ID))
 		q.Set("apikey", c.key)
+	} else {
+		q.Del("chainid")
+		q.Del("apikey")
 	}
 	q.Set("module", "account")
 	u := base + "?" + q.Encode()
@@ -382,6 +403,17 @@ func (c *client) get(ctx context.Context, ch Chain, q url.Values, out any) error
 			_ = json.Unmarshal(env.Result, &msg)
 			if msg == "" {
 				msg = env.Message
+			}
+			if viaKey && !ch.KeyOnly && strings.Contains(strings.ToLower(msg), "upgrade") {
+				// "Free API access is not supported for this chain": the
+				// network's free explorer answers instead.
+				c.mu.Lock()
+				if c.free == nil {
+					c.free = map[string]bool{}
+				}
+				c.free[ch.Name] = true
+				c.mu.Unlock()
+				return c.get(ctx, ch, q, out)
 			}
 			return fmt.Errorf("%s %s: %s", ch.Name, q.Get("action"), msg)
 		}
@@ -478,6 +510,8 @@ var canonical = map[string]map[string]string{
 	"gnosis": {"USDC": "0xddafbb505ad214d7b80b1f830fccc89b60fb7a83", "USDT": "0x4ecaba5870353805a9f068101a40e0f32ed605c6",
 		"WETH": "0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1"},
 	"avalanche": {"USDC": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e", "USDT": "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7"},
+	"bsc": {"USDC": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", "USDT": "0x55d398326f99059ff775485246999027b3197955",
+		"ETH": "0x2170ed0880ac9a755fd29b2688956bd959f933f8"},
 }
 
 var protected = map[string]bool{"USDC": true, "USDT": true, "DAI": true, "WETH": true, "WBTC": true, "ETH": true}

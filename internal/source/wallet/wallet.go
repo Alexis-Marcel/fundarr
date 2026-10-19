@@ -28,11 +28,12 @@ func init() {
 		Fields: []source.Field{
 			{Name: "accounts", Label: "Accounts", Secret: true, Lines: true,
 				Help: "One per line. Bitcoin: the account's xpub, ypub or zpub (Ledger Live: account → ⋯ → Edit account → Advanced). " +
-					"Ethereum and EVM: the 0x… address, read on every network (" + strings.Join(evm.Networks(), ", ") + ")."},
+					"Ethereum and EVM: the 0x… address, read on every network (" + strings.Join(evm.Networks(), ", ") + "; bsc only with an Etherscan key)."},
 			{Name: "esplora_url", Label: "Bitcoin Esplora API", Optional: true,
 				Help: "default https://mempool.space/api, then https://blockstream.info/api; point to your own mempool/electrs for privacy"},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true,
-				Help: "optional: reads Ethereum networks through Etherscan v2 instead of Blockscout"},
+				Help: "optional. Needed for BNB Chain (bsc), which no free explorer indexes: an Etherscan plan that covers it. " +
+					"Other networks go through Etherscan v2 when the plan covers them, through free explorers otherwise"},
 		},
 		Setup: "Fundarr only reads public keys and addresses: it can list the history, never spend. Each blockchain has its own keys, " +
 			"so add one line per account you see in Ledger Live (or your wallet app). Never type your recovery words anywhere but on " +
