@@ -75,7 +75,8 @@ func New(cfg source.Config) (source.Source, error) {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
 	s := &Binance{
-		c:   &client{base: base, key: key, secret: []byte(secret), http: hc, pause: 150 * time.Millisecond, sleep: sleepCtx},
+		c: &client{base: base, key: key, secret: []byte(secret), http: hc, pause: 150 * time.Millisecond, sleep: sleepCtx,
+			slow: map[string]time.Duration{"/sapi/v1/fiat/orders": 16 * time.Second, "/sapi/v1/fiat/payments": 16 * time.Second}},
 		now: time.Now,
 	}
 	if len(cfg.State) > 0 {
@@ -343,6 +344,7 @@ func (b *Binance) Activities(ctx context.Context, f source.Fetch) error {
 		return errors.New("binance: no Emit")
 	}
 	r := &run{b: b, f: f, from: genesis, to: b.now().UTC(), seen: map[string]bool{}}
+	b.c.onWait = func(path string, d time.Duration) { r.progress("Binance: rate limited on %s, waiting %s", path, d.Round(time.Second)) }
 	if !f.Since.IsZero() {
 		r.from = f.Since.UTC().Add(-overlap)
 		if r.from.Before(genesis) {
@@ -362,13 +364,20 @@ func (b *Binance) Activities(ctx context.Context, f source.Fetch) error {
 		{"dust conversions", r.dust},
 		{"spot trades", r.trades},
 	}
+	// A section that fails does not stop the others: what they fetch is
+	// kept, and the run reports every failure at the end.
+	var errs []error
 	for _, s := range steps {
 		r.progress("Binance: %s", s.name)
 		if err := s.fn(ctx); err != nil {
-			return fmt.Errorf("binance %s: %w", s.name, err)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			r.progress("Binance: %s failed: %v", s.name, err)
+			errs = append(errs, fmt.Errorf("binance %s: %w", s.name, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (r *run) deposits(ctx context.Context) error {
@@ -498,7 +507,20 @@ func fiatDone(status string) bool {
 
 // fiatPages walks the time windows and pages of a fiat history endpoint.
 func fiatPages[T any](ctx context.Context, r *run, path, txType string, each func(T) error) error {
-	for _, w := range windows(r.from, r.to, fiatWindow) {
+	// One call per page over the whole range when Binance accepts it (it
+	// documents no maximum), 89-day windows otherwise: each call is costly.
+	ws := [][2]time.Time{{r.from, r.to}}
+	err := fiatRange(ctx, r, path, txType, ws, each)
+	var api *apiError
+	if errors.As(err, &api) && api.Status == http.StatusBadRequest {
+		r.progress("Binance: %s refused the whole range (%s), going by windows", path, api.Msg)
+		return fiatRange(ctx, r, path, txType, windows(r.from, r.to, fiatWindow), each)
+	}
+	return err
+}
+
+func fiatRange[T any](ctx context.Context, r *run, path, txType string, ws [][2]time.Time, each func(T) error) error {
+	for _, w := range ws {
 		for page, seen := 1, 0; ; page++ {
 			var env fiatEnvelope[T]
 			q := url.Values{"transactionType": {txType}, "beginTime": {ms(w[0])}, "endTime": {ms(w[1])}, "page": {strconv.Itoa(page)}, "rows": {"500"}}

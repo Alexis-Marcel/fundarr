@@ -633,3 +633,37 @@ func contains(logs []string, s string) bool {
 	}
 	return false
 }
+
+// A European key does not exist on www.okx.com (50119): the client moves to
+// the regional domain by itself, unless the user set one.
+func TestRegionalDomain(t *testing.T) {
+	notHere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"code":"50119","msg":"API key doesn't exist","data":[]}`)
+	}))
+	defer notHere.Close()
+	here := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"code":"0","msg":"","data":[{"uid":"1","perm":"read_only"}]}`)
+	}))
+	defer here.Close()
+	old := regionBases
+	defer func() { regionBases = old }()
+
+	regionBases = []string{notHere.URL, here.URL}
+	c := &client{base: notHere.URL, auto: true, key: "k", secret: "s", pass: "p", http: here.Client(), now: time.Now, sleep: sleepCtx}
+	var out []map[string]string
+	if err := c.do(context.Background(), "GET", "/api/v5/account/config", nil, nil, &out); err != nil || c.base != here.URL || out[0]["perm"] != "read_only" {
+		t.Fatalf("switch: %v %s %v", err, c.base, out)
+	}
+
+	regionBases = []string{notHere.URL}
+	c = &client{base: notHere.URL, auto: true, key: "k", secret: "s", pass: "p", http: here.Client(), now: time.Now, sleep: sleepCtx}
+	if err := c.do(context.Background(), "GET", "/api/v5/account/config", nil, nil, &out); err == nil || !strings.Contains(err.Error(), "none of OKX's domains") {
+		t.Fatalf("nowhere: %v", err)
+	}
+
+	// A domain chosen by the user is kept.
+	c = &client{base: notHere.URL, key: "k", secret: "s", pass: "p", http: here.Client(), now: time.Now, sleep: sleepCtx}
+	if err := c.do(context.Background(), "GET", "/api/v5/account/config", nil, nil, &out); err == nil || !strings.Contains(err.Error(), "50119") || c.base != notHere.URL {
+		t.Fatalf("fixed domain: %v", err)
+	}
+}
