@@ -39,9 +39,6 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
             <StatusDot health={health(src)} />
             <span>{statusText(src)}</span>
           </p>
-          <p className="muted small">
-            {def?.name ?? src.kind}, last synced {ago(src.lastOk)}, syncs every {src.intervalMinutes >= 60 ? `${src.intervalMinutes / 60} h` : `${src.intervalMinutes} min`}
-          </p>
         </div>
         <div className="detail-actions">
           <button
@@ -60,6 +57,31 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
           </button>
         </div>
       </header>
+
+      <dl className="stats">
+        <div>
+          <dt>Last sync</dt>
+          <dd title={isZeroTime(src.lastOk) ? undefined : dateTime(src.lastOk)}>{src.running ? "Running now" : ago(src.lastOk)}</dd>
+          {!isZeroTime(src.lastOk) && <small>{dateTime(src.lastOk)}</small>}
+        </div>
+        <div>
+          <dt>Next sync</dt>
+          <dd>{nextSync(src)}</dd>
+          <small>every {src.intervalMinutes >= 60 ? `${src.intervalMinutes / 60} h` : `${src.intervalMinutes} min`}</small>
+        </div>
+        <div>
+          <dt>Activities</dt>
+          <dd>{src.activities.toLocaleString("en")}</dd>
+          <small>{def?.name ?? src.kind}</small>
+        </div>
+        <div>
+          <dt>Balance check</dt>
+          <dd className={src.gaps && src.gaps.length ? "status-warn" : ""}>
+            {isZeroTime(src.balancesAt) ? "Pending" : src.gaps && src.gaps.length ? `${src.gaps.length} to explain` : "All match"}
+          </dd>
+          <small>{isZeroTime(src.balancesAt) ? "after the first sync" : `balances ${ago(src.balancesAt)}`}</small>
+        </div>
+      </dl>
 
       <nav className="tabs" role="tablist">
         {(
@@ -131,6 +153,17 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
   );
 }
 
+function nextSync(s: Source): string {
+  if (s.running) return "After this one";
+  if (!s.enabled) return "Paused";
+  if (isZeroTime(s.lastRun)) return "Within a minute";
+  // A failed run is retried after 15 minutes at most.
+  const wait = s.lastError ? Math.min(s.intervalMinutes, 15) : s.intervalMinutes;
+  const at = new Date(new Date(s.lastRun).getTime() + wait * 60000);
+  if (at.getTime() <= Date.now()) return "Within a minute";
+  return ago(at.toISOString());
+}
+
 function EntitySettings({ src, onChanged }: { src: Source; onChanged: () => void }) {
   const opts = [60, 180, 360, 720, 1440];
   return (
@@ -170,6 +203,8 @@ function Check({ src }: { src: Source }) {
   const { data } = usePoll(() => api.holdings(src.id), src.running ? 4000 : 30000, [src.id, src.running, src.lastOk]);
   if (!data) return <p className="muted">Loading…</p>;
   if (isZeroTime(data.balancesAt)) return <p className="muted">Balances arrive at the end of the first sync.</p>;
+  if (data.holdings.length === 0)
+    return <p className="muted check-intro">Nothing is held here right now, and the history agrees: every coin that came in also went out.</p>;
   const lines = [...data.holdings].sort((a, b) => Number(b.gap) - Number(a.gap) || assetLabel(a.asset).localeCompare(assetLabel(b.asset)));
   return (
     <div>
