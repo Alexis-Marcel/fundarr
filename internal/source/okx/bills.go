@@ -125,10 +125,12 @@ type ledgerLine struct {
 	reward, fee   bool // explicitly classified
 }
 
-func mapFundingBills(bills []fundingBill, emit func(model.Activity) error) error {
+// mapFundingBills maps funding bills; skip lists extra types covered by
+// another history in this run.
+func mapFundingBills(bills []fundingBill, skip map[string]bool, emit func(model.Activity) error) error {
 	var rest []ledgerLine
 	for _, b := range bills {
-		if fundingSkip[b.Type] {
+		if fundingSkip[b.Type] || skip[b.Type] {
 			continue
 		}
 		name := fundingNames[b.Type]

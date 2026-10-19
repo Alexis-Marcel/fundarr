@@ -100,6 +100,19 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
             extra={<EntitySettings src={src} onChanged={reload} />}
           />
           <div className="danger-zone">
+            <p>Fetch the whole history again, as on the first sync. Useful after an update teaches Fundarr new kinds of activity; nothing is duplicated.</p>
+            <button
+              className="btn"
+              disabled={src.running}
+              onClick={async () => {
+                await api.sync(src.id, true);
+                setEditing(false);
+                setFast(true);
+                reload();
+              }}
+            >
+              Fetch the whole history again
+            </button>
             <p>Deleting a source removes its history from Fundarr. Destinations keep what they already received.</p>
             <button
               className="btn btn-danger"

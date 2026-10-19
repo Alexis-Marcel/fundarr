@@ -377,12 +377,29 @@ func (s *Source) Activities(ctx context.Context, f source.Fetch) error {
 		return err
 	}
 
+	progress(f, "bank deposits and withdrawals")
+	if err := s.fiatDeposits(ctx, f, cutoff, emit); err != nil {
+		return err
+	}
+	if err := s.fiatWithdrawals(ctx, f, cutoff, emit); err != nil {
+		return err
+	}
+	progress(f, "buy/sell orders")
+	bought, err := s.fiatBuySell(ctx, f, cutoff, emit)
+	if err != nil {
+		return err
+	}
+	var skip map[string]bool
+	if bought > 0 {
+		skip = buySellBillTypes
+	}
+
 	progress(f, "funding account ledger")
 	fb, err := s.fundingBills(ctx, cutoff)
 	if err != nil {
 		return err
 	}
-	if err := mapFundingBills(fb, emit); err != nil {
+	if err := mapFundingBills(fb, skip, emit); err != nil {
 		return err
 	}
 

@@ -60,6 +60,7 @@ type fake struct {
 	trades      map[string][]trade
 	dividends   []map[string]any
 	converts    []map[string]any
+	known       map[string]bool // pairs myTrades accepts (listed + delisted with history)
 }
 
 func newFake(t *testing.T) *fake {
@@ -101,6 +102,13 @@ func newFake(t *testing.T) *fake {
 	bt = append(bt, trade{ID: 1500, Price: "60000", Qty: "0.1", QuoteQty: "", Commission: "6", CommissionAsset: "USDT",
 		Time: msAt(2024, 4, 1), IsBuyer: false})
 	f.trades["BTCUSDT"] = bt
+	// A delisted pair (absent from exchangeInfo): sold 0.01 ETH for 15 BUSD.
+	f.trades["ETHBUSD"] = []trade{{ID: 77, Price: "1500", Qty: "0.01", QuoteQty: "15", Commission: "0", CommissionAsset: "BUSD",
+		Time: msAt(2023, 2, 1), IsBuyer: false}}
+	f.known = map[string]bool{"ETHBUSD": true}
+	for _, s := range []string{"BTCEUR", "BTCUSDT", "ETHUSDT", "ETHBTC", "BNBUSDT", "LDOUSDT", "TRXUSDT", "XYZUSDT", "DOGEUSDT", "SHIBDOGE"} {
+		f.known[s] = true
+	}
 	// Distributions: 10 TRX airdrop, 0.5 TRX taken back, 1.5 USDT earn
 	// interest, and 600 small XYZ rewards (forces range splitting).
 	f.dividends = []map[string]any{
@@ -271,6 +279,11 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v3/myTrades":
 		sym := q.Get("symbol")
 		f.tradeQ[sym] = append(f.tradeQ[sym], q.Get("fromId"))
+		if !f.known[sym] {
+			w.WriteHeader(http.StatusBadRequest)
+			write(map[string]any{"code": -1121, "msg": "Invalid symbol."})
+			return
+		}
 		from, _ := strconv.ParseInt(q.Get("fromId"), 10, 64)
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		out := []map[string]any{}
@@ -292,7 +305,10 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{"asset": "BTC", "free": "0.20000000", "locked": "0.00950000"},
 			{"asset": "EUR", "free": "323.5", "locked": "0"},
 			{"asset": "BNB", "free": "0.0005", "locked": "0"},
-			{"asset": "USDT", "free": "4000", "locked": "0"},
+			{"asset": "USDT", "free": "4048.72", "locked": "0"},
+			{"asset": "SOL", "free": "0.1", "locked": "0"},
+			{"asset": "WBETH", "free": "0.048", "locked": "0"},
+			{"asset": "BUSD", "free": "15", "locked": "0"},
 			{"asset": "LDUSDT", "free": "995.5", "locked": "0"}, // receipt of the flexible position below
 			{"asset": "LDXYZ", "free": "100", "locked": "0"},    // receipt without a position: counted as XYZ
 			{"asset": "XYZ", "free": "500", "locked": "0"},
@@ -312,8 +328,84 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			write(map[string]any{"rows": []map[string]any{}, "total": 2})
 		}
+	case "/sapi/v1/lending/auto-invest/history/list":
+		f.windowCheck(r, "startTime", 30*24*time.Hour)
+		if q.Get("planType") != "ALL" {
+			f.t.Errorf("auto-invest planType %q", q.Get("planType"))
+		}
+		rows := []map[string]any{}
+		if inRange(r, msAt(2025, 5, 1), "startTime") {
+			rows = append(rows,
+				map[string]any{"id": 12345, "targetAsset": "SOL", "planType": "SINGLE", "planName": "SOL", "planId": 1234,
+					"transactionDateTime": msAt(2025, 5, 1), "transactionStatus": "SUCCESS", "failedType": "", "sourceAsset": "USDT",
+					"sourceAssetAmount": "20", "targetAssetAmount": "0.1", "sourceWallet": "SPOT_WALLET", "flexibleUsed": "false",
+					"transactionFee": "0.02", "transactionFeeUnit": "USDT", "executionPrice": "199.8", "executionType": "RECURRING", "subscriptionCycle": "WEEKLY"},
+				map[string]any{"id": 12346, "targetAsset": "SOL", "planType": "SINGLE", "planName": "SOL", "planId": 1234,
+					"transactionDateTime": msAt(2025, 5, 1) + 1, "transactionStatus": "FAILED", "failedType": "INSUFFICIENT_BALANCE",
+					"sourceAsset": "USDT", "sourceAssetAmount": "0", "targetAssetAmount": "0", "transactionFee": "0", "transactionFeeUnit": "USDT"})
+		}
+		write(map[string]any{"total": len(rows), "list": rows})
+	case "/sapi/v1/simple-earn/flexible/history/rewardsRecord":
+		f.windowCheck(r, "startTime", 30*24*time.Hour)
+		rows := []map[string]any{}
+		if inRange(r, msAt(2025, 3, 1), "startTime") {
+			rows = append(rows, map[string]any{"asset": "USDT", "rewards": "1.5", "projectId": "USDT001", "type": "REALTIME", "time": msAt(2025, 3, 1)})
+		}
+		write(map[string]any{"rows": rows, "total": len(rows)})
+	case "/sapi/v1/simple-earn/locked/history/rewardsRecord":
+		f.windowCheck(r, "startTime", 30*24*time.Hour)
+		rows := []map[string]any{}
+		if inRange(r, msAt(2025, 3, 2), "startTime") {
+			rows = append(rows, map[string]any{"positionId": 123123, "time": msAt(2025, 3, 2), "asset": "ETH", "lockPeriod": "30", "amount": "0.001", "type": "Locked Rewards"})
+		}
+		write(map[string]any{"rows": rows, "total": len(rows)})
+	case "/sapi/v1/eth-staking/eth/history/stakingHistory", "/sapi/v1/eth-staking/eth/history/redemptionHistory",
+		"/sapi/v1/eth-staking/wbeth/history/wrapHistory", "/sapi/v1/eth-staking/wbeth/history/unwrapHistory",
+		"/sapi/v1/sol-staking/sol/history/stakingHistory", "/sapi/v1/sol-staking/sol/history/redemptionHistory":
+		f.windowCheck(r, "startTime", 92*24*time.Hour)
+		rows := []map[string]any{}
+		if path == "/sapi/v1/eth-staking/eth/history/stakingHistory" && inRange(r, msAt(2024, 7, 1), "startTime") {
+			rows = append(rows, map[string]any{"time": msAt(2024, 7, 1), "asset": "ETH", "amount": "0.1", "distributeAsset": "WBETH",
+				"distributeAmount": "0.098", "conversionRatio": "1.02", "status": "SUCCESS"},
+				map[string]any{"time": msAt(2024, 7, 2), "asset": "ETH", "amount": "5", "distributeAsset": "WBETH",
+					"distributeAmount": "4.9", "status": "FAILED"})
+		}
+		if path == "/sapi/v1/eth-staking/eth/history/redemptionHistory" && inRange(r, msAt(2024, 8, 1), "startTime") {
+			rows = append(rows, map[string]any{"time": msAt(2024, 8, 1), "arrivalTime": msAt(2024, 8, 3), "asset": "WBETH", "amount": "0.05",
+				"distributeAsset": "ETH", "distributeAmount": "0.051", "conversionRatio": "1.02", "status": "SUCCESS"})
+		}
+		write(map[string]any{"rows": rows, "total": len(rows)})
+	case "/sapi/v1/pay/transactions":
+		f.windowCheck(r, "startTime", 90*24*time.Hour)
+		if s, _ := strconv.ParseInt(q.Get("startTime"), 10, 64); time.UnixMilli(s).Before(now.Add(-18 * 31 * 24 * time.Hour)) {
+			f.t.Errorf("pay asked beyond 18 months")
+		}
+		rows := []map[string]any{}
+		if inRange(r, msAt(2026, 3, 1), "startTime") {
+			rows = append(rows,
+				map[string]any{"orderType": "C2C", "transactionId": "M_P_71505104267788288", "transactionTime": msAt(2026, 3, 1),
+					"amount": "23.72", "currency": "USDT", "walletType": 1, "fundsDetail": []map[string]any{{"currency": "USDT", "amount": "23.72"}}},
+				map[string]any{"orderType": "PAY", "transactionId": "P2", "transactionTime": msAt(2026, 3, 2), "amount": "-5", "currency": "USDT"})
+		}
+		write(map[string]any{"code": "000000", "message": "success", "data": rows, "success": true})
+	case "/sapi/v1/c2c/orderMatch/listUserOrderHistory":
+		qs, _ := strconv.ParseInt(q.Get("startTimestamp"), 10, 64)
+		qe, _ := strconv.ParseInt(q.Get("endTimestamp"), 10, 64)
+		if qe <= qs || time.Duration(qe-qs)*time.Millisecond >= 30*24*time.Hour || time.UnixMilli(qs).Before(now.Add(-6*31*24*time.Hour)) {
+			f.t.Errorf("c2c range %d..%d", qs, qe)
+		}
+		rows := []map[string]any{}
+		at := msAt(2026, 8, 1)
+		if q.Get("tradeType") == "BUY" && at >= qs && at <= qe {
+			rows = append(rows, map[string]any{"orderNumber": "20219644646554779648", "advNo": "11218246497340923904", "tradeType": "BUY",
+				"asset": "USDT", "fiat": "EUR", "fiatSymbol": "€", "amount": "50", "totalPrice": "46", "unitPrice": "0.92",
+				"orderStatus": "COMPLETED", "createTime": at, "commission": "0", "counterPartNickName": "ab***", "payMethodName": "SEPA"},
+				map[string]any{"orderNumber": "x", "tradeType": "BUY", "asset": "USDT", "fiat": "EUR", "amount": "10", "totalPrice": "9",
+					"orderStatus": "CANCELLED", "createTime": at})
+		}
+		write(map[string]any{"code": "000000", "message": "success", "data": rows, "total": len(rows), "success": true})
 	case "/sapi/v1/simple-earn/locked/position":
-		write(map[string]any{"rows": []map[string]any{{"positionId": "123123", "asset": "ETH", "amount": "0.5", "purchaseTime": "1646182276000"}}, "total": 1})
+		write(map[string]any{"rows": []map[string]any{{"positionId": "123123", "asset": "ETH", "amount": "0.442", "purchaseTime": "1646182276000"}}, "total": 1})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		write(map[string]any{"code": -1, "msg": "no route " + path})
@@ -361,6 +453,9 @@ func connect(t *testing.T, f *fake, st []byte) (*Binance, *httptest.Server) {
 	}
 	b := src.(*Binance)
 	b.c.pause = 0
+	for path := range b.c.slow {
+		b.c.slow[path] = 0
+	}
 	b.now = func() time.Time { return now }
 	return b, srv
 }
@@ -510,6 +605,50 @@ func TestFullHistoryReconciles(t *testing.T) {
 		t.Errorf("fiat withdrawal %+v", fw)
 	}
 
+	// Products beyond spot.
+	ai := m["auto-invest:12345"]
+	if ai.Type != model.Trade || ai.Side != model.Buy || ai.Base.Asset.Symbol != "SOL" || ai.Fee == nil || ai.Fee.Asset.Symbol != "USDT" {
+		t.Errorf("auto-invest %+v", ai)
+	}
+	eq(t, "auto-invest paid without fee", ai.Quote.Qty, "19.98")
+	if _, ok := m["auto-invest:12346"]; ok {
+		t.Error("failed auto-invest must be skipped")
+	}
+	if _, ok := m["distribution:242006912"]; ok {
+		t.Error("Simple Earn interest in assetDividend must be skipped (rewards history has it)")
+	}
+	if e := m[fmt.Sprintf("earn-flexible:USDT001:USDT:REALTIME:%d", msAt(2025, 3, 1))]; e.Type != model.Reward || !e.Base.Qty.Equal(decimal.RequireFromString("1.5")) {
+		t.Errorf("flexible reward %+v", e)
+	}
+	if e := m[fmt.Sprintf("earn-locked:123123:ETH:Locked Rewards:%d", msAt(2025, 3, 2))]; e.Type != model.Reward {
+		t.Errorf("locked reward %+v", e)
+	}
+	st1 := m[fmt.Sprintf("eth-stake:%d:ETH:0.1", msAt(2024, 7, 1))]
+	if st1.Base.Asset.Symbol != "WBETH" || st1.Quote.Asset.Symbol != "ETH" {
+		t.Errorf("eth staking %+v", st1)
+	}
+	if red := m[fmt.Sprintf("eth-redeem:%d:WBETH:0.05", msAt(2024, 8, 1))]; red.Base.Asset.Symbol != "ETH" || !red.Time.Equal(time.UnixMilli(msAt(2024, 8, 3)).UTC()) {
+		t.Errorf("eth redemption %+v", red)
+	}
+	if p := m["pay:M_P_71505104267788288"]; p.Type != model.Deposit || p.Base.Asset.Symbol != "USDT" {
+		t.Errorf("pay in %+v", p)
+	}
+	if p := m["pay:P2"]; p.Type != model.Withdrawal || !p.Base.Qty.Equal(decimal.NewFromInt(5)) {
+		t.Errorf("pay out %+v", p)
+	}
+	if p := m["p2p:20219644646554779648"]; p.Side != model.Buy || p.Quote.Asset.Symbol != "EUR" {
+		t.Errorf("p2p %+v", p)
+	}
+	if p := m["p2p:20219644646554779648:fiat"]; p.Type != model.Deposit {
+		t.Errorf("p2p fiat %+v", p)
+	}
+	if _, ok := m["p2p:x"]; ok {
+		t.Error("cancelled p2p must be skipped")
+	}
+	if d := m["trade:ETHBUSD:77"]; d.Side != model.Sell || d.Quote.Asset.Symbol != "BUSD" {
+		t.Errorf("delisted pair trade %+v", d)
+	}
+
 	// Paging: 1001 BTCUSDT trades in two calls; 1500 deposits need offsets.
 	if q := f.tradeQ["BTCUSDT"]; len(q) != 2 || q[0] != "0" || q[1] != "1500" {
 		t.Errorf("BTCUSDT fromIds %v", q)
@@ -547,7 +686,8 @@ func TestFullHistoryReconciles(t *testing.T) {
 	for _, x := range bal {
 		got[x.Asset.Symbol] = x.Qty.String()
 	}
-	want := map[string]string{"BTC": "0.2095", "EUR": "323.5", "BNB": "0.0005", "USDT": "4995.5", "ETH": "0.53", "LDO": "3", "XYZ": "600"}
+	want := map[string]string{"BTC": "0.2095", "EUR": "323.5", "BNB": "0.0005", "USDT": "5044.22", "ETH": "0.472", "LDO": "3", "XYZ": "600",
+		"SOL": "0.1", "WBETH": "0.048", "BUSD": "15"}
 	for k, v := range want {
 		if !decimal.RequireFromString(got[k]).Equal(decimal.RequireFromString(v)) {
 			t.Errorf("balance %s = %s, want %s", k, got[k], v)
@@ -570,11 +710,14 @@ func TestFullHistoryReconciles(t *testing.T) {
 	if _, ok := st.Trades["ETHUSDT"]; ok {
 		t.Error("pairs without trades are not remembered")
 	}
+	if !st.Dead["SOLBUSD"] || st.Dead["ETHBUSD"] || st.Dead["BTCUSDT"] {
+		t.Errorf("unknown pairs are remembered as dead: %v", st.Dead)
+	}
 }
 
 func TestIncremental(t *testing.T) {
 	f := newFake(t)
-	st, _ := json.Marshal(state{Trades: map[string]int64{"BTCUSDT": 1500, "SHIBDOGE": 7}})
+	st, _ := json.Marshal(state{Trades: map[string]int64{"BTCUSDT": 1500, "SHIBDOGE": 7}, Dead: map[string]bool{"SOLBUSD": true}})
 	b, _ := connect(t, f, st)
 	since := time.Date(2025, 1, 10, 0, 0, 0, 0, time.UTC)
 	acts, _ := collect(t, b, since)
@@ -590,6 +733,9 @@ func TestIncremental(t *testing.T) {
 	}
 	if _, asked := f.tradeQ["SHIBDOGE"]; !asked {
 		t.Error("a pair traded before is always checked")
+	}
+	if _, asked := f.tradeQ["SOLBUSD"]; asked {
+		t.Error("a dead pair is not asked again")
 	}
 	for _, raw := range f.queries["/sapi/v1/capital/deposit/hisrec"] {
 		s, _ := strconv.ParseInt(strings.SplitN(strings.SplitN(raw, "startTime=", 2)[1], "&", 2)[0], 10, 64)
@@ -794,5 +940,31 @@ func TestFiatRangeFallbackAndPartialFailure(t *testing.T) {
 		if d > 16*time.Second {
 			t.Fatalf("spacing %v", d)
 		}
+	}
+}
+
+func TestDecodePage(t *testing.T) {
+	for _, c := range []struct {
+		raw   string
+		n     int
+		total int
+	}{
+		{`[{"a":1},{"a":2}]`, 2, -1},
+		{`{"total":3,"list":[{}]}`, 1, 3},
+		{`{"rows":[{},{}],"total":2}`, 2, 2},
+		{`{"code":"000000","data":[{}]}`, 1, -1},
+		{`null`, 0, 0},
+		{``, 0, 0},
+	} {
+		rows, total, err := decodePage(json.RawMessage(c.raw))
+		if err != nil || len(rows) != c.n || total != c.total {
+			t.Errorf("%s: %d rows, total %d, %v", c.raw, len(rows), total, err)
+		}
+	}
+	if _, _, err := decodePage(json.RawMessage(`{"rows":5}`)); err == nil {
+		t.Error("bad page must fail")
+	}
+	if !ok("") || !ok("success") || ok("FAILED") {
+		t.Error("ok")
 	}
 }

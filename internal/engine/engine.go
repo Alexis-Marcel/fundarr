@@ -165,6 +165,16 @@ func (e *Engine) Build(ent *store.Entity) (source.Source, error) {
 
 // Sync fetches a source's history and balances, then pushes to its routes.
 func (e *Engine) Sync(ctx context.Context, id string) (*SyncResult, error) {
+	return e.sync0(ctx, id, false)
+}
+
+// Resync fetches the whole history again, as on the first run (after a
+// connector learned new kinds of activity). Known activities are deduplicated.
+func (e *Engine) Resync(ctx context.Context, id string) (*SyncResult, error) {
+	return e.sync0(ctx, id, true)
+}
+
+func (e *Engine) sync0(ctx context.Context, id string, full bool) (*SyncResult, error) {
 	if !e.lock(id) {
 		return nil, ErrBusy
 	}
@@ -176,6 +186,9 @@ func (e *Engine) Sync(ctx context.Context, id string) (*SyncResult, error) {
 	runID, _ := e.Store.StartRun(ctx, "sync", id)
 	log := &runLog{start: time.Now()}
 	started := e.Now()
+	if full {
+		ent.LastOK = time.Time{}
+	}
 	res, state, err := e.sync(ctx, ent, log)
 	if err != nil {
 		log.add("error: %v", err)

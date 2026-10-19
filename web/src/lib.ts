@@ -77,6 +77,8 @@ export function monogram(kind: string) {
     wealthfolio: ["WF", 150],
     ghostfolio: ["GF", 260],
     traderepublic: ["TR", 0],
+    bitcoin: ["₿", 32],
+    evm: ["Ξ", 230],
   };
   if (known[kind]) return known[kind];
   let h = 0;

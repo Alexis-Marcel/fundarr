@@ -176,7 +176,7 @@ export const api = {
   testSource: (in_: EntityInput & { id?: string }) => call<{ ok: boolean }>("POST", "/api/sources/test", in_),
   updateSource: (id: string, in_: EntityInput) => call<Source>("PUT", `/api/sources/${id}`, in_),
   deleteSource: (id: string) => call("DELETE", `/api/sources/${id}`, {}),
-  sync: (id: string) => call("POST", `/api/sources/${id}/sync`, {}),
+  sync: (id: string, full = false) => call("POST", `/api/sources/${id}/sync`, { full }),
   activities: (id: string, offset: number, limit = 50) =>
     call<{ activities: Activity[]; total: number }>("GET", `/api/sources/${id}/activities?offset=${offset}&limit=${limit}`),
   holdings: (id: string) => call<{ holdings: HoldingLine[]; balancesAt: string }>("GET", `/api/sources/${id}/holdings`),
