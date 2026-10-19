@@ -1,0 +1,188 @@
+// Typed calls to Fundarr's API.
+
+export interface Field {
+  name: string;
+  label: string;
+  secret?: boolean;
+  optional?: boolean;
+  help?: string;
+}
+
+export interface SourceDef {
+  kind: string;
+  name: string;
+  category: string;
+  description: string;
+  fields: Field[];
+  setup?: string;
+}
+
+export interface DestDef {
+  kind: string;
+  name: string;
+  description: string;
+  fields: Field[];
+  setup?: string;
+}
+
+export interface Asset {
+  kind: "crypto" | "fiat" | "security";
+  symbol: string;
+  isin?: string;
+  name?: string;
+}
+
+export interface Amount {
+  asset: Asset;
+  qty: string;
+}
+
+export interface Gap {
+  asset: Asset;
+  replayed: string;
+  reported: string;
+  diff: string;
+}
+
+export interface Source {
+  id: string;
+  kind: string;
+  name: string;
+  settings: Record<string, string>;
+  enabled: boolean;
+  created: string;
+  lastRun: string;
+  lastOk: string;
+  lastError: string;
+  category: string;
+  intervalMinutes: number;
+  running: boolean;
+  activities: number;
+  balancesAt: string;
+  gaps: Gap[] | null;
+  secretsSet: string[] | null;
+}
+
+export interface Destination {
+  id: string;
+  kind: string;
+  name: string;
+  settings: Record<string, string>;
+  enabled: boolean;
+  lastError: string;
+  running: boolean;
+  counts: Record<string, number>;
+  secretsSet: string[] | null;
+}
+
+export interface Route {
+  destinationId: string;
+  sourceId: string;
+  account: string;
+  since: string;
+}
+
+export interface DestAccount {
+  id: string;
+  name: string;
+  currency?: string;
+}
+
+export interface Activity {
+  id: string;
+  nativeId: string;
+  time: string;
+  type: string;
+  side?: "buy" | "sell";
+  base: Amount;
+  quote?: Amount;
+  fee?: Amount;
+  network?: string;
+  txId?: string;
+  note?: string;
+}
+
+export interface HoldingLine {
+  asset: Asset;
+  replayed: string;
+  reported: string;
+  gap: boolean;
+}
+
+export interface Run {
+  id: number;
+  kind: "sync" | "push";
+  subjectId: string;
+  started: string;
+  ended: string;
+  ok: boolean | null;
+  summary: string;
+  log?: string;
+}
+
+export interface Session {
+  user: string;
+  mode: "oidc" | "password" | "none";
+  version: string;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    credentials: "same-origin",
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    if (res.status === 401 && path !== "/api/login") window.dispatchEvent(new Event("fundarr:signedout"));
+    throw new ApiError(res.status, data?.error ?? res.statusText);
+  }
+  return data as T;
+}
+
+export interface EntityInput {
+  kind?: string;
+  name?: string;
+  values?: Record<string, string>;
+  enabled?: boolean;
+  intervalMinutes?: number;
+  skipTest?: boolean;
+}
+
+export const api = {
+  session: () => call<Session>("GET", "/api/session"),
+  login: (password: string) => call<{ user: string }>("POST", "/api/login", { password }),
+  logout: () => call<{ redirect: string }>("POST", "/api/logout", {}),
+  definitions: () => call<{ sources: SourceDef[]; destinations: DestDef[] }>("GET", "/api/definitions"),
+  sources: () => call<Source[]>("GET", "/api/sources"),
+  createSource: (in_: EntityInput) => call<Source>("POST", "/api/sources", in_),
+  testSource: (in_: EntityInput & { id?: string }) => call<{ ok: boolean }>("POST", "/api/sources/test", in_),
+  updateSource: (id: string, in_: EntityInput) => call<Source>("PUT", `/api/sources/${id}`, in_),
+  deleteSource: (id: string) => call("DELETE", `/api/sources/${id}`, {}),
+  sync: (id: string) => call("POST", `/api/sources/${id}/sync`, {}),
+  activities: (id: string, offset: number, limit = 50) =>
+    call<{ activities: Activity[]; total: number }>("GET", `/api/sources/${id}/activities?offset=${offset}&limit=${limit}`),
+  holdings: (id: string) => call<{ holdings: HoldingLine[]; balancesAt: string }>("GET", `/api/sources/${id}/holdings`),
+  destinations: () => call<{ destinations: Destination[]; routes: Route[] }>("GET", "/api/destinations"),
+  createDestination: (in_: EntityInput) => call<Destination>("POST", "/api/destinations", in_),
+  updateDestination: (id: string, in_: EntityInput) => call<Destination>("PUT", `/api/destinations/${id}`, in_),
+  deleteDestination: (id: string) => call("DELETE", `/api/destinations/${id}`, {}),
+  accounts: (id: string) => call<DestAccount[]>("GET", `/api/destinations/${id}/accounts`),
+  push: (id: string) => call("POST", `/api/destinations/${id}/push`, {}),
+  putRoute: (r: Partial<Route>) => call<Route>("PUT", "/api/routes", r),
+  deleteRoute: (r: Partial<Route>) => call("DELETE", "/api/routes", r),
+  resetRoute: (r: Partial<Route>) => call("POST", "/api/routes/reset", r),
+  runs: (subject = "", limit = 50, log = false) =>
+    call<Run[]>("GET", `/api/runs?subject=${encodeURIComponent(subject)}&limit=${limit}${log ? "&log=1" : ""}`),
+};
