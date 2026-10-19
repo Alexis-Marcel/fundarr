@@ -46,6 +46,9 @@ type AuthConfig struct {
 	OIDCAllowedMails []string
 	// PublicURL is where users reach Fundarr (for the OIDC redirect).
 	PublicURL string
+	// OIDCAutoRedirect sends signed-out visitors straight to the provider:
+	// with a session there, they come back signed in without a click.
+	OIDCAutoRedirect bool
 
 	SessionKey []byte
 	SessionTTL time.Duration

@@ -66,6 +66,7 @@ On first start, Fundarr creates `/data/secret.key`, which encrypts the API keys 
 
 | Variable | |
 |---|---|
+| `FUNDARR_OIDC_AUTO_REDIRECT` | `false` shows a Sign in button instead of going to the identity provider right away (default: right away, so an open SSO session signs in without a click). |
 | `FUNDARR_PASSWORD_HASH`, `FUNDARR_USERNAME` | Fix the credentials from the environment instead of the UI (`docker run --rm -it ghcr.io/alexis-marcel/fundarr hash-password`; in Compose, double every `$`). |
 | `FUNDARR_SECRET_KEY` | Master key in base64 (`openssl rand -base64 32`), instead of the key file. |
 | `FUNDARR_DATA`, `FUNDARR_ADDR` | Data directory (`/data`) and listen address (`:9494`). |

@@ -124,6 +124,7 @@ func run(log *slog.Logger) error {
 			OIDCAllowedSubs:  list("FUNDARR_OIDC_ALLOWED_SUBS"),
 			OIDCAllowedMails: list("FUNDARR_OIDC_ALLOWED_EMAILS"),
 			PublicURL:        os.Getenv("FUNDARR_URL"),
+			OIDCAutoRedirect: !strings.EqualFold(os.Getenv("FUNDARR_OIDC_AUTO_REDIRECT"), "false"),
 			SessionKey:       box.Key("fundarr/session"),
 		},
 	})

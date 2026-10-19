@@ -46,6 +46,21 @@ function Login({ session, onIn }: { session: Session; onIn: () => void }) {
     }
   };
 
+  // Single sign-on: go to the provider at once. With a session there, the
+  // user is back signed in without a click. Not after an error, and at
+  // most once every 30 s, so a failing sign-in cannot loop.
+  const autoGo = session.mode === "oidc" && session.auto && !err && recentAttempt() === false;
+  useEffect(() => {
+    if (!autoGo) return;
+    try {
+      sessionStorage.setItem("fundarr:sso", String(Date.now()));
+    } catch {
+      /* private mode: no guard, still fine once */
+    }
+    window.location.replace("/auth/login");
+  }, [autoGo]);
+  if (autoGo) return null;
+
   if (session.mode === "proxy")
     return (
       <div className="center">
@@ -108,6 +123,15 @@ function Login({ session, onIn }: { session: Session; onIn: () => void }) {
       </div>
     </div>
   );
+}
+
+function recentAttempt(): boolean {
+  try {
+    const t = Number(sessionStorage.getItem("fundarr:sso") ?? 0);
+    return Date.now() - t < 30_000;
+  } catch {
+    return false;
+  }
 }
 
 function Wordmark() {
