@@ -4,13 +4,16 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 )
 
 // deriveAddress returns the address at chain/index (0 = receive, 1 = change)
 // under the account key, in the given format.
 func deriveAddress(acct *hdkeychain.ExtendedKey, t scriptType, chain, index uint32) (string, error) {
+	return Bitcoin.derive(acct, t, chain, index)
+}
+
+func (coin Coin) derive(acct *hdkeychain.ExtendedKey, t scriptType, chain, index uint32) (string, error) {
 	c, err := acct.Derive(chain)
 	if err != nil {
 		return "", err
@@ -23,8 +26,11 @@ func deriveAddress(acct *hdkeychain.ExtendedKey, t scriptType, chain, index uint
 	if err != nil {
 		return "", err
 	}
-	params := &chaincfg.MainNetParams
+	params := coin.params
 	h := btcutil.Hash160(pub.SerializeCompressed())
+	if coin.cashaddr && t == p2pkh {
+		return cashAddr(h), nil
+	}
 	var a btcutil.Address
 	switch t {
 	case p2pkh:

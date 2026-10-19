@@ -1,13 +1,17 @@
 import { useState, type FormEvent } from "react";
-import type { Field } from "../api";
+import type { Field, ListItem } from "../api";
+import { AccountList } from "./AccountList";
 
 interface Props {
+  /** The source kind, for lists whose values the server recognizes. */
+  kind?: string;
   defName: string;
   fields: Field[];
   setup?: string;
   initialName?: string;
   settings?: Record<string, string>;
   secretsSet?: string[] | null;
+  secretItems?: Record<string, ListItem[]>;
   /** Checks the values against the service without saving. */
   onTest?: (name: string, values: Record<string, string>) => Promise<void>;
   onSave: (name: string, values: Record<string, string>) => Promise<void>;
@@ -40,6 +44,35 @@ export function EntityForm(p: Props) {
     }
   };
 
+  const field = (f: Field) =>
+        f.lines && p.kind ? (
+          <AccountList
+            key={f.name}
+            kind={p.kind}
+            label={f.label}
+            help={f.help}
+            saved={p.secretItems?.[f.name]}
+            onChange={(v) => setValues((x) => ({ ...x, [f.name]: v }))}
+          />
+        ) : (
+          <label className="field" key={f.name}>
+            <span>
+              {f.label}
+              {f.optional && <em className="opt"> optional</em>}
+            </span>
+            <input
+              type={f.secret ? "password" : "text"}
+              autoComplete="off"
+              spellCheck={false}
+              value={values[f.name] ?? ""}
+              placeholder={f.secret && saved.has(f.name) ? "Saved. Leave empty to keep it" : ""}
+              onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+              required={!f.optional && !(f.secret && saved.has(f.name))}
+            />
+            {f.help && <small>{f.help}</small>}
+          </label>
+        );
+
   return (
     <form
       className="entity-form"
@@ -53,39 +86,13 @@ export function EntityForm(p: Props) {
         <span>Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
       </label>
-      {p.fields.map((f) => (
-        <label className="field" key={f.name}>
-          <span>
-            {f.label}
-            {f.optional && <em className="opt"> optional</em>}
-          </span>
-          {f.lines ? (
-            <textarea
-              rows={Math.max(3, (values[f.name] ?? "").split("\n").length + 1)}
-              autoComplete="off"
-              spellCheck={false}
-              value={values[f.name] ?? ""}
-              placeholder="One per line"
-              onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
-              required={!f.optional && !(f.secret && saved.has(f.name))}
-            />
-          ) : (
-            <input
-              type={f.secret ? "password" : "text"}
-              autoComplete="off"
-              spellCheck={false}
-              value={values[f.name] ?? ""}
-              placeholder={f.secret && saved.has(f.name) ? "Saved. Leave empty to keep it" : ""}
-              onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
-              required={!f.optional && !(f.secret && saved.has(f.name))}
-            />
-          )}
-          {f.help && <small>{f.help}</small>}
-          {f.lines && f.secret && saved.has(f.name) && (
-            <small>Saved lines show hidden in the middle; keep them as they are, remove the ones you no longer want, add new ones.</small>
-          )}
-        </label>
-      ))}
+      {p.fields.filter((f) => !f.advanced).map(field)}
+      {p.fields.some((f) => f.advanced) && (
+        <details className="advanced">
+          <summary>Advanced</summary>
+          {p.fields.filter((f) => f.advanced).map(field)}
+        </details>
+      )}
       {p.extra}
       {msg && (
         <p className={msg.ok ? "notice notice-ok" : "notice notice-error"} role="status">

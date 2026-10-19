@@ -185,12 +185,50 @@ select:disabled {
 input[type="date"] {
   color-scheme: dark;
 }
-textarea {
-  font-family: ui-monospace, monospace;
+/* A list of accounts: one row each, then the field that adds one. */
+.accounts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+  background: var(--ink-2);
+}
+.accounts li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  min-width: 0;
+}
+.accounts li + li {
+  border-top: 1px solid var(--line-soft);
+}
+.account-chain {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+select.account-chain {
+  padding: 0.2rem 0.4rem;
+}
+.account-key {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
   font-size: 0.85em;
-  resize: vertical;
-  white-space: pre;
-  overflow-x: auto;
+}
+.account-add {
+  display: flex;
+  gap: 0.5rem;
+}
+.account-add input {
+  flex: 1 1 auto;
+}
+.field-error {
+  color: var(--error);
 }
 .check {
   display: flex;
@@ -940,4 +978,28 @@ textarea {
 }
 .settings-card h2 {
   margin-bottom: 0.75rem;
+}
+
+.field-help {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+.field-help li + li {
+  margin-top: 0.2rem;
+}
+.advanced {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 0.75rem;
+}
+.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.advanced[open] summary {
+  margin-bottom: 0.75rem;
+}
+.advanced > .field + .field {
+  margin-top: 1rem;
 }

@@ -83,6 +83,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/sources/{id}/import", s.protect(s.importStatement, 64<<20))
 	api("POST /api/password", s.auth.handleChangePassword)
 	api("GET /api/definitions", s.definitions)
+	api("POST /api/kinds/{kind}/detect", s.detect)
 	api("GET /api/sources", s.listSources)
 	api("POST /api/sources", s.createSource)
 	api("POST /api/sources/test", s.testSource)
@@ -181,8 +182,9 @@ type sourceView struct {
 	BalancesAt time.Time   `json:"balancesAt"`
 	Gaps       []model.Gap `json:"gaps"`
 	SecretSet  []string    `json:"secretsSet"` // which secret fields have a value
-	// SecretLines: secret lists, masked line by line (see maskLines).
-	SecretLines map[string]string `json:"secretLines,omitempty"`
+	// SecretItems: secret lists, masked item by item (see mask), with what
+	// each item is when the kind can tell.
+	SecretItems map[string][]listItem `json:"secretItems,omitempty"`
 	// Corrections: balance corrections in the history; Adjust: whether
 	// Fundarr makes them for this source.
 	Corrections int  `json:"corrections"`
@@ -212,10 +214,10 @@ func (s *Server) viewSource(ctx context.Context, e *store.Entity) sourceView {
 		if d, err := source.Get(e.Kind); err == nil {
 			for _, f := range d.Fields {
 				if f.Secret && f.Lines && sec[f.Name] != "" {
-					if v.SecretLines == nil {
-						v.SecretLines = map[string]string{}
+					if v.SecretItems == nil {
+						v.SecretItems = map[string][]listItem{}
 					}
-					v.SecretLines[f.Name] = maskLines(sec[f.Name])
+					v.SecretItems[f.Name] = items(d, sec[f.Name])
 				}
 			}
 		}
@@ -230,6 +232,51 @@ func mask(l string) string {
 		return l[:min(2, len(l))] + "…"
 	}
 	return l[:8] + "…" + l[len(l)-6:]
+}
+
+// listItem is one saved value of a list, masked.
+type listItem struct {
+	Value string `json:"value"`
+	Chain string `json:"chain,omitempty"`
+}
+
+func items(d source.Definition, v string) []listItem {
+	out := []listItem{}
+	for _, l := range strings.Split(v, "\n") {
+		if l = strings.TrimSpace(l); l == "" {
+			continue
+		}
+		it := listItem{Value: mask(l)}
+		if d.Detect != nil {
+			if det, err := d.Detect(l); err == nil {
+				it.Chain = det.Chain
+			}
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// detect says what one value of a list is, before it is saved.
+func (s *Server) detect(w http.ResponseWriter, r *http.Request) {
+	d, err := source.Get(r.PathValue("kind"))
+	if err != nil || d.Detect == nil {
+		writeErr(w, 404, "this kind has no list to check")
+		return
+	}
+	var in struct {
+		Value string `json:"value"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	det, err := d.Detect(in.Value)
+	if err != nil {
+		writeErr(w, 422, err.Error())
+		return
+	}
+	writeJSON(w, det)
 }
 
 func maskLines(v string) string {

@@ -39,8 +39,8 @@ func TestNewParsesTheList(t *testing.T) {
 		zpub + "\n" + zpub:                  "already",
 		addr + "\n" + strings.ToLower(addr): "already",
 		"bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu": "xpub",
-		"hello":  "not a supported",
-		"0x1234": "line 1",
+		"hello":  "does not recognize",
+		"0x1234": "account 1",
 	} {
 		if _, err := New(source.Config{Values: map[string]string{"accounts": in}}); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v", in, err)
@@ -111,6 +111,13 @@ func TestTokenSentBetweenOwnAccountsKeepsItsGas(t *testing.T) {
 	at := time.Now().UTC()
 	usdc := model.Amount{Asset: model.Asset{Kind: model.Crypto, Symbol: "USDC"}, Qty: decimal.NewFromInt(100)}
 	gas := model.Amount{Asset: model.Asset{Kind: model.Crypto, Symbol: "ETH"}, Qty: decimal.RequireFromString("0.001")}
+	// One account getting part of what it sent back is not a transfer.
+	if got := internal([]model.Activity{
+		{NativeID: "x:out", Type: model.Withdrawal, Time: at, TxID: "0x9", Base: usdc},
+		{NativeID: "x:refund", Type: model.Deposit, Time: at, TxID: "0x9", Base: usdc},
+	}); len(got) != 2 {
+		t.Errorf("same account merged %+v", got)
+	}
 	got := internal([]model.Activity{
 		{NativeID: "x:out", Type: model.Withdrawal, Time: at, TxID: "0x1", Base: usdc, Fee: &gas},
 		{NativeID: "y:in", Type: model.Deposit, Time: at, TxID: "0x1", Base: usdc},
@@ -126,5 +133,38 @@ func TestTokenSentBetweenOwnAccountsKeepsItsGas(t *testing.T) {
 		{NativeID: "i", Type: model.Deposit, Time: at, TxID: "0x2", Base: more},
 	}); len(got) != 2 {
 		t.Errorf("kept %+v", got)
+	}
+}
+
+func TestDetect(t *testing.T) {
+	d, err := Detect("  " + zpub + " ")
+	if err != nil || d.Chain != "Bitcoin" || d.Value != zpub || len(d.Choices) != 0 {
+		t.Errorf("zpub %+v %v", d, err)
+	}
+	// A plain xpub can be read on every Bitcoin-like chain.
+	xpub := "xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ"
+	d, err = Detect(xpub)
+	if err != nil || d.Chain != "Bitcoin" || len(d.Choices) != 4 || d.Choices[1].Value != "bch:"+xpub || d.Choices[1].Chain != "Bitcoin Cash" {
+		t.Errorf("xpub %+v %v", d, err)
+	}
+	if d, err := Detect("bch:" + xpub); err != nil || d.Chain != "Bitcoin Cash" {
+		t.Errorf("bch %+v %v", d, err)
+	}
+	if d, err := Detect(addr); err != nil || d.Chain != "Ethereum & EVM networks" {
+		t.Errorf("evm %+v %v", d, err)
+	}
+	for _, bad := range []string{"bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", "0x12", "ltc:" + addr} {
+		if _, err := Detect(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+}
+
+func TestDetectTron(t *testing.T) {
+	if d, err := Detect("TEgfk1gjsMdXZYm9743PWYuM6Fc5MGJYeq"); err != nil || d.Chain != "Tron" {
+		t.Errorf("tron %+v %v", d, err)
+	}
+	if _, err := Detect("TEgfk1gjsMdXZYm9743PWYuM6Fc5MGJYeQ"); err == nil {
+		t.Error("bad checksum accepted")
 	}
 }

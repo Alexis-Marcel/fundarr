@@ -7,6 +7,20 @@ export interface Field {
   optional?: boolean;
   help?: string;
   lines?: boolean; // a list, one value per line
+  advanced?: boolean; // tucked under "Advanced"
+}
+
+/** One saved value of a list (masked), and what it is. */
+export interface ListItem {
+  value: string;
+  chain?: string;
+}
+
+/** What a value pasted in a list is, before saving. */
+export interface Detected {
+  chain: string;
+  value: string; // how to store it
+  choices?: { chain: string; value: string }[]; // other chains it can be read on
 }
 
 export interface SourceDef {
@@ -65,7 +79,7 @@ export interface Source {
   balancesAt: string;
   gaps: Gap[] | null;
   secretsSet: string[] | null;
-  secretLines?: Record<string, string>; // secret lists, masked line by line
+  secretItems?: Record<string, ListItem[]>; // secret lists, masked item by item
   corrections: number; // balance corrections in the history
   adjust: boolean; // whether Fundarr makes them
 }
@@ -233,6 +247,7 @@ export const api = {
   definitions: () => call<{ sources: SourceDef[]; destinations: DestDef[] }>("GET", "/api/definitions"),
   sources: () => call<Source[]>("GET", "/api/sources"),
   createSource: (in_: EntityInput) => call<Source>("POST", "/api/sources", in_),
+  detect: (kind: string, value: string) => call<Detected>("POST", `/api/kinds/${kind}/detect`, { value }),
   testSource: (in_: EntityInput & { id?: string }) => call<{ ok: boolean }>("POST", "/api/sources/test", in_),
   updateSource: (id: string, in_: EntityInput) => call<Source>("PUT", `/api/sources/${id}`, in_),
   deleteSource: (id: string) => call("DELETE", `/api/sources/${id}`, {}),

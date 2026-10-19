@@ -216,19 +216,19 @@ func setup(t *testing.T) (*fakeEsplora, *httptest.Server, map[string]string) {
 	return f, srv, map[string]string{"r0": r0, "r1": r1, "r2": r2, "c0": c0}
 }
 
-func newSource(t *testing.T, srv *httptest.Server, state []byte) *Bitcoin {
+func newSource(t *testing.T, srv *httptest.Server, state []byte) *Wallet {
 	t.Helper()
 	s, err := New(source.Config{Values: map[string]string{"xpub": zpub84, "esplora_url": srv.URL + "/"}, HTTP: srv.Client(), State: state})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := s.(*Bitcoin)
+	b := s.(*Wallet)
 	b.c.pause = 0
 	b.c.sleep = func(ctx context.Context, d time.Duration) error { return ctx.Err() }
 	return b
 }
 
-func collect(t *testing.T, b *Bitcoin, since time.Time) ([]model.Activity, []string) {
+func collect(t *testing.T, b *Wallet, since time.Time) ([]model.Activity, []string) {
 	t.Helper()
 	var acts []model.Activity
 	var logs []string
@@ -407,11 +407,11 @@ func TestClientRetriesAndErrors(t *testing.T) {
 	}
 	// Default and bare-host Esplora URLs.
 	s, _ := New(source.Config{Values: map[string]string{"xpub": zpub84}})
-	if s.(*Bitcoin).c.base != defaultEsplora {
+	if s.(*Wallet).c.base != defaultEsplora {
 		t.Error("default esplora")
 	}
 	s, _ = New(source.Config{Values: map[string]string{"xpub": zpub84, "esplora_url": "mempool.local/api"}, State: []byte(`{"txCounts":{"a":1}}`)})
-	if s.(*Bitcoin).c.base != "https://mempool.local/api" || s.(*Bitcoin).st.TxCounts["a"] != 1 {
+	if s.(*Wallet).c.base != "https://mempool.local/api" || s.(*Wallet).st.TxCounts["a"] != 1 {
 		t.Error("bare host / state")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -430,7 +430,7 @@ func TestClientFailsOverToNextServer(t *testing.T) {
 		fmt.Fprint(w, `{"chain_stats":{"tx_count":3}}`)
 	}))
 	defer up.Close()
-	c := &client{base: down.URL, fallback: []string{busy.URL, up.URL}, http: up.Client(),
+	c := &client{base: down.URL, fallback: []server{{url: busy.URL}, {url: up.URL}}, http: up.Client(),
 		sleep: func(ctx context.Context, d time.Duration) error { return ctx.Err() }}
 	s, err := c.address(context.Background(), "x")
 	if err != nil || s.Chain.TxCount != 3 || c.base != up.URL {
@@ -444,7 +444,7 @@ func TestClientFailsOverToNextServer(t *testing.T) {
 	// The default comes with a fallback; a server the user chose does not.
 	s1, _ := New(source.Config{Values: map[string]string{"xpub": zpub84}})
 	s2, _ := New(source.Config{Values: map[string]string{"xpub": zpub84, "esplora_url": "https://my.node/api"}})
-	if len(s1.(*Bitcoin).c.fallback) == 0 || len(s2.(*Bitcoin).c.fallback) != 0 {
+	if len(s1.(*Wallet).c.fallback) == 0 || len(s2.(*Wallet).c.fallback) != 0 {
 		t.Error("fallback only for the default")
 	}
 }
