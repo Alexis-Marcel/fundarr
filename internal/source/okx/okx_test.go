@@ -163,6 +163,9 @@ func scenario(f *fake) {
 				bill("f85", "USDT", "-100", "75", at(36)),  // Simple Earn subscription: internal
 				bill("f84", "USDT", "1500", "1", at(0)),    // deposit: from deposit-history
 				bill("f83", "BTC", "-0.0102", "2", at(30)), // withdrawal: from withdrawal-history
+				bill("f82", "EUR", "2000", "1", at(2)),     // bank deposit: from fiat history
+				bill("f81", "EUR", "-300", "116", at(3)),   // buy/sell order: from buy/sell history
+				bill("f80", "BTC", "0.005", "117", at(3)),  //
 			}
 			for i := len(page); i < 100; i++ {
 				page = append(page, bill(fmt.Sprintf("x%d", i), "USDT", "-1", "131", at(1)))
@@ -193,6 +196,35 @@ func scenario(f *fake) {
 			tb("t2", "1", "BTC", "0.0199", "-0.0001", "BTC-USDT", "1", at(20)), // buy, fee in BTC
 			tb("t1", "1", "USDT", "-600", "0", "BTC-USDT", "1", at(20)),        //
 			tb("t0", "11", "USDT", "1900", "0", "", "", at(1)),                 // transfer in: internal
+		}
+	})
+
+	// Bank movements and buy/sell orders.
+	f.on("GET", "/api/v5/fiat/deposit-order-history", func(r *http.Request) any {
+		if r.URL.Query().Get("before") == "" {
+			page := []any{map[string]any{"ordId": "fd1", "ccy": "EUR", "amt": "2000", "fee": "0", "paymentMethod": "SEPA",
+				"paymentAcctId": "1", "state": "completed", "cTime": at(2), "uTime": at(2), "clientId": ""}}
+			for i := 0; i < 99; i++ {
+				page = append(page, map[string]any{"ordId": fmt.Sprintf("fp%d", i), "ccy": "EUR", "amt": "5", "state": "pending", "cTime": at(2)})
+			}
+			return page
+		}
+		if got := r.URL.Query().Get("before"); got != fmt.Sprint(t0.Add(2*time.Hour).UnixMilli()-1) {
+			f.t.Errorf("fiat deposit page 2 before=%s", got)
+		}
+		return []any{}
+	})
+	f.on("GET", "/api/v5/fiat/withdrawal-order-history", func(*http.Request) any {
+		return []any{
+			map[string]any{"ordId": "fw1", "ccy": "EUR", "amt": "100", "fee": "1", "paymentMethod": "SEPA", "state": "completed", "cTime": at(50), "uTime": "0"},
+			map[string]any{"ordId": "fw2", "ccy": "EUR", "amt": "100", "fee": "1", "paymentMethod": "SEPA", "state": "failed", "cTime": at(51)},
+		}
+	})
+	f.on("GET", "/api/v5/fiat/buy-sell/history", func(*http.Request) any {
+		return []any{
+			map[string]any{"ordId": "bs1", "state": "completed", "side": "buy", "fromCcy": "EUR", "toCcy": "BTC", "rfqAmt": "300",
+				"rfqCcy": "EUR", "fillPx": "60000", "fillQuoteCcy": "EUR", "fillFromAmt": "300", "fillToAmt": "0.005", "cTime": at(3), "uTime": at(3)},
+			map[string]any{"ordId": "bs2", "state": "failed", "fromCcy": "EUR", "toCcy": "BTC", "fillFromAmt": "0", "fillToAmt": "0", "cTime": at(4)},
 		}
 	})
 
@@ -245,6 +277,8 @@ func scenario(f *fake) {
 			map[string]any{"ccy": "ADA", "bal": "20", "availBal": "20", "frozenBal": "0"},
 			map[string]any{"ccy": "OKB", "bal": "5", "availBal": "5", "frozenBal": "0"},
 			map[string]any{"ccy": "XRP", "bal": "1", "availBal": "1", "frozenBal": "0"},
+			map[string]any{"ccy": "EUR", "bal": "1599", "availBal": "1599", "frozenBal": "0"},
+			map[string]any{"ccy": "BTC", "bal": "0.005", "availBal": "0.005", "frozenBal": "0"},
 		}
 	})
 	f.on("GET", "/api/v5/finance/savings/balance", func(*http.Request) any {
@@ -350,7 +384,18 @@ func TestFullHistoryReconciles(t *testing.T) {
 			t.Errorf("internal or duplicated movement emitted: %s", id)
 		}
 	}
-	if len(acts) != 15 {
+	sepa := check("fiatdep:fd1", model.Deposit, "", "EUR", "2000")
+	if sepa.Base.Asset.Kind != model.Fiat || sepa.Fee != nil || !strings.Contains(sepa.Note, "SEPA") {
+		t.Errorf("bank deposit %+v", sepa)
+	}
+	if w := check("fiatwd:fw1", model.Withdrawal, "", "EUR", "100"); w.Fee == nil || !w.Fee.Qty.Equal(d("1")) || !w.Time.Equal(t0.Add(50*time.Hour)) {
+		t.Errorf("bank withdrawal %+v", w)
+	}
+	bs := check("buysell:bs1", model.Trade, model.Buy, "BTC", "0.005")
+	if !bs.Quote.Qty.Equal(d("300")) || bs.Quote.Asset.Symbol != "EUR" {
+		t.Errorf("buy/sell %+v", bs.Quote)
+	}
+	if len(acts) != 18 {
 		t.Errorf("got %d activities: %v", len(acts), keys(acts))
 	}
 
@@ -406,6 +451,34 @@ func TestFullHistoryReconciles(t *testing.T) {
 	// Records older than the cutoff are left out.
 	if _, ok := acts2["dep:d1"]; ok {
 		t.Error("old deposit re-emitted on an incremental run")
+	}
+}
+
+func TestFiatUnavailable(t *testing.T) {
+	f := newFake(t)
+	scenario(f)
+	for _, p := range []string{"/api/v5/fiat/deposit-order-history", "/api/v5/fiat/withdrawal-order-history", "/api/v5/fiat/buy-sell/history"} {
+		f.on("GET", p, func(*http.Request) any { return &apiErr{"50030", "No permission to use this API"} })
+	}
+	s := f.source(t, nil, time.Date(2024, 5, 15, 0, 0, 0, 0, time.UTC))
+	acts, logs := collect(t, s, time.Time{})
+	if !contains(logs, "fiat deposit history not available") || !contains(logs, "buy/sell history not available") {
+		t.Errorf("logs %v", logs)
+	}
+	// Without the buy/sell history, its funding bills are kept (as an exchange).
+	if a, ok := acts["pair:fbill:f80+fbill:f81"]; !ok || a.Type != model.Trade || a.Base.Asset.Symbol != "BTC" {
+		t.Errorf("buy/sell bills not kept: %v", keys(acts))
+	}
+	if _, ok := acts["fiatdep:fd1"]; ok {
+		t.Error("unavailable history emitted")
+	}
+	// Network errors are not mistaken for "unavailable".
+	g := newFake(t)
+	scenario(g)
+	g.on("GET", "/api/v5/fiat/deposit-order-history", func(*http.Request) any { return http.StatusBadGateway })
+	src := g.source(t, nil, time.Date(2021, 2, 1, 0, 0, 0, 0, time.UTC))
+	if err := src.Activities(context.Background(), source.Fetch{Emit: func(model.Activity) error { return nil }}); err == nil {
+		t.Error("HTTP error swallowed")
 	}
 }
 

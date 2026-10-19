@@ -247,3 +247,22 @@ func TestBusyValuesTestAndSchedule(t *testing.T) {
 		t.Fatal("must wait for the interval")
 	}
 }
+
+func TestResyncStartsFromScratch(t *testing.T) {
+	e, ctx := setup(t)
+	sealed, _ := e.Seal(map[string]string{"secret": "s3cret"})
+	_ = e.Store.PutSource(ctx, &store.Entity{ID: "s", Kind: "fake", Name: "Fake", Secrets: sealed, Enabled: true})
+	fakeActs = []model.Activity{dep("1", "1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}
+	if _, err := e.Sync(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Sync(ctx, "s"); err != nil || fakeSeen[1].Since.IsZero() {
+		t.Fatal("second sync is incremental")
+	}
+	if _, err := e.Resync(ctx, "s"); err != nil || !fakeSeen[2].Since.IsZero() {
+		t.Fatal("resync starts from the beginning")
+	}
+	if n, _ := e.Store.CountActivities(ctx, "s"); n != 1 {
+		t.Fatal("no duplicates")
+	}
+}

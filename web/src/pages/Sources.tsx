@@ -119,7 +119,7 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
             </button>
           ))}
           <p className="muted small picker-note">
-            More connectors are on the way: Trade Republic, Ledger and on-chain wallets. Each one is a small Go package; see CONTRIBUTING.md.
+            More connectors are on the way, starting with Trade Republic. Each one is a small Go package; see CONTRIBUTING.md.
           </p>
         </div>
       ) : (

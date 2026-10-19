@@ -1,7 +1,8 @@
 // Package binance reads a Binance account's history and balances with a
-// read-only API key: deposits and withdrawals, spot trades, converts, card and
-// bank purchases, dust conversions and distributions (staking, Simple Earn
-// interest, airdrops). Binance is treated as one account: moves between its
+// read-only API key: deposits and withdrawals, spot trades (delisted pairs
+// included), converts, card and bank purchases, dust conversions,
+// distributions (airdrops, token swaps), Auto-Invest, Simple Earn rewards,
+// ETH/SOL liquid staking, Binance Pay and P2P. Binance is treated as one account: moves between its
 // internal wallets (spot, funding, earn) are not activities.
 package binance
 
@@ -42,12 +43,20 @@ const (
 // Quote assets tried when looking for trading pairs of an asset we have seen.
 var commonQuotes = []string{"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "EUR", "BTC", "ETH", "BNB", "TRY", "BRL", "GBP"}
 
+// Quotes of pairs that were delisted (BUSD was wound down in 2023, many EUR
+// and GBP pairs closed): their pairs are gone from exchangeInfo, but trades
+// made on them still count. They are tried for every asset seen.
+var historicalQuotes = []string{"BUSD", "USDC", "TUSD", "USDP", "PAX", "UST", "EUR", "GBP", "BTC", "ETH", "BNB", "USDT", "FDUSD"}
+
+// errInvalidSymbol is Binance's answer for a pair it does not know.
+const errInvalidSymbol = -1121
+
 func init() {
 	source.Register(source.Definition{
 		Kind:        "binance",
 		Name:        "Binance",
 		Category:    "exchange",
-		Description: "Spot trades, converts, card purchases, deposits, withdrawals, staking and Earn rewards.",
+		Description: "Spot trades, converts, Auto-Invest, card and P2P purchases, Pay, deposits, withdrawals, staking and Earn rewards.",
 		Fields: []source.Field{
 			{Name: "api_key", Label: "API key"},
 			{Name: "api_secret", Label: "API secret", Secret: true},
@@ -79,6 +88,9 @@ func New(cfg source.Config) (source.Source, error) {
 			slow: map[string]time.Duration{"/sapi/v1/fiat/orders": 16 * time.Second, "/sapi/v1/fiat/payments": 16 * time.Second}},
 		now: time.Now,
 	}
+	for path, gap := range productSlow {
+		s.c.slow[path] = gap
+	}
 	if len(cfg.State) > 0 {
 		if err := json.Unmarshal(cfg.State, &s.state); err != nil {
 			return nil, fmt.Errorf("binance: bad saved state: %w", err)
@@ -86,6 +98,9 @@ func New(cfg source.Config) (source.Source, error) {
 	}
 	if s.state.Trades == nil {
 		s.state.Trades = map[string]int64{}
+	}
+	if s.state.Dead == nil {
+		s.state.Dead = map[string]bool{}
 	}
 	return s, nil
 }
@@ -102,6 +117,9 @@ type Binance struct {
 // trades are fetched incrementally and pairs once traded are always checked.
 type state struct {
 	Trades map[string]int64 `json:"trades"`
+	// Dead are candidate pairs Binance does not know (never listed, or
+	// delisted with no history kept): not asked again.
+	Dead map[string]bool `json:"dead,omitempty"`
 }
 
 func (b *Binance) State() []byte {
@@ -364,6 +382,11 @@ func (b *Binance) Activities(ctx context.Context, f source.Fetch) error {
 		{"converts", r.converts},
 		{"distributions", r.dividends},
 		{"dust conversions", r.dust},
+		{"Auto-Invest", r.autoInvest},
+		{"Simple Earn rewards", r.earnRewards},
+		{"staking", r.staking},
+		{"Binance Pay", r.pay},
+		{"P2P", r.p2p},
 		{"spot trades", r.trades},
 	}
 	// A section that fails does not stop the others: what they fetch is
@@ -737,6 +760,10 @@ func (r *run) dividends(ctx context.Context) error {
 			return walk(next, to)
 		}
 		for _, d := range res.Rows {
+			// Simple Earn interest comes from its own rewards history.
+			if strings.Contains(strings.ToLower(d.EnInfo), "simple earn") {
+				continue
+			}
 			a := amt(d.Asset, d.Amount)
 			typ := model.Reward
 			// A negative amount or direction takes the asset away.
@@ -876,6 +903,23 @@ func (r *run) trades(ctx context.Context) error {
 			todo = append(todo, s)
 		}
 	}
+	listed := map[string]bool{}
+	for _, s := range syms {
+		listed[s.Symbol] = true
+	}
+	for base := range r.seen {
+		if model.CryptoOrFiat(base).Kind == model.Fiat {
+			continue
+		}
+		for _, q := range historicalQuotes {
+			sym := base + q
+			if base == q || listed[sym] || r.b.state.Dead[sym] {
+				continue
+			}
+			listed[sym] = true
+			todo = append(todo, symbolInfo{Symbol: sym, Base: base, Quote: q})
+		}
+	}
 	sort.Slice(todo, func(i, j int) bool { return todo[i].Symbol < todo[j].Symbol })
 	r.progress("Binance: checking %d trading pairs", len(todo))
 	for _, s := range todo {
@@ -907,6 +951,11 @@ func (r *run) symbolTrades(ctx context.Context, s symbolInfo) error {
 		}
 		q := url.Values{"symbol": {s.Symbol}, "fromId": {strconv.FormatInt(from, 10)}, "limit": {"1000"}}
 		if err := r.b.c.get(ctx, "/api/v3/myTrades", q, &rows); err != nil {
+			var e *apiError
+			if errors.As(err, &e) && e.Code == errInvalidSymbol {
+				r.b.state.Dead[s.Symbol] = true
+				return nil
+			}
 			return err
 		}
 		for _, t := range rows {

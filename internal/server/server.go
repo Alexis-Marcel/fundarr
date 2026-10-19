@@ -382,7 +382,15 @@ func (s *Server) syncSource(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "a sync is already running")
 		return
 	}
-	go s.eng.Sync(s.cfg.Background, id)
+	var body struct {
+		Full bool `json:"full"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Full {
+		go s.eng.Resync(s.cfg.Background, id)
+	} else {
+		go s.eng.Sync(s.cfg.Background, id)
+	}
 	w.WriteHeader(http.StatusAccepted)
 	writeJSON(w, map[string]bool{"started": true})
 }

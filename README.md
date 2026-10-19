@@ -23,14 +23,16 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 
 | Source | History | Notes |
 |---|---|---|
-| Binance | Since 2017 | Read-only API key. Spot trades are found per pair, starting from every asset the account ever touched. |
-| OKX | Since Feb 2021 | Read-only v5 key. Older trading history comes from OKX's quarterly archives, ready about 2 hours after the first sync. |
+| Binance | Since 2017 | Read-only API key. Spot trades (including delisted pairs), converts, Auto-Invest, card and bank purchases, Simple Earn rewards, ETH/SOL staking, distributions, dust, Binance Pay (18 months), P2P (6 months). |
+| OKX | Since Feb 2021 | Read-only v5 key. Older trading history comes from OKX's quarterly archives, ready about 2 hours after the first sync. Bank (SEPA) deposits and withdrawals included. Regional domains (EEA, US) detected. |
+| Bitcoin wallet | Full | Extended public key (xpub, ypub, zpub: Ledger, Trezor, Sparrow…). Scans every address type in use; any Esplora server (mempool.space by default, or your own). |
+| Ethereum & EVM wallet | Full | Public address on Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis: ETH, tokens, gas. Blockscout without a key, or Etherscan v2. DEX swaps appear as two legs. |
 
 | Destination | How |
 |---|---|
 | Wealthfolio | Through its MCP endpoint (`WF_MCP_ENABLED=true` and an access token). Stablecoins can count as USD or EUR cash, so crypto bought with them has a price. |
 
-Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)), Bitcoin and EVM wallets from public addresses, Ghostfolio, and CSV. Adding one is a single Go package; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)), Solana, Ghostfolio, CSV, and historical prices (so staking rewards count as income). Adding one is a single Go package; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Run it
 
