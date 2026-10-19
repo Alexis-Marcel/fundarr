@@ -344,7 +344,9 @@ func (b *Binance) Activities(ctx context.Context, f source.Fetch) error {
 		return errors.New("binance: no Emit")
 	}
 	r := &run{b: b, f: f, from: genesis, to: b.now().UTC(), seen: map[string]bool{}}
-	b.c.onWait = func(path string, d time.Duration) { r.progress("Binance: rate limited on %s, waiting %s", path, d.Round(time.Second)) }
+	b.c.onWait = func(path string, d time.Duration) {
+		r.progress("Binance: rate limited on %s, waiting %s", path, d.Round(time.Second))
+	}
 	if !f.Since.IsZero() {
 		r.from = f.Since.UTC().Add(-overlap)
 		if r.from.Before(genesis) {
