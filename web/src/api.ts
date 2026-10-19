@@ -6,6 +6,7 @@ export interface Field {
   secret?: boolean;
   optional?: boolean;
   help?: string;
+  lines?: boolean; // a list, one value per line
 }
 
 export interface SourceDef {
@@ -17,6 +18,7 @@ export interface SourceDef {
   setup?: string;
   statement?: string; // how to export the platform's statement (import supported)
   limits?: string; // what the platform's API cannot tell
+  hidden?: boolean; // kept for existing sources, not offered for new ones
 }
 
 export interface DestDef {
@@ -63,6 +65,7 @@ export interface Source {
   balancesAt: string;
   gaps: Gap[] | null;
   secretsSet: string[] | null;
+  secretLines?: Record<string, string>; // secret lists, masked line by line
   corrections: number; // balance corrections in the history
   adjust: boolean; // whether Fundarr makes them
 }

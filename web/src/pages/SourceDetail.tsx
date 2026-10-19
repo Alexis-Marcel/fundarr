@@ -138,7 +138,7 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
             fields={def.fields}
             setup={def.setup}
             initialName={src.name}
-            settings={src.settings}
+            settings={{ ...src.settings, ...src.secretLines }}
             secretsSet={src.secretsSet}
             saveLabel="Save"
             onTest={async (name, values) => {

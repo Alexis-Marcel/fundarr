@@ -35,6 +35,7 @@ func init() {
 		Kind:        "bitcoin",
 		Name:        "Bitcoin wallet",
 		Category:    "wallet",
+		Hidden:      true, // the Wallet source covers it
 		Description: "Bitcoin from an extended public key (Ledger, Trezor, Sparrow…): read-only, no private key.",
 		Fields: []source.Field{
 			{Name: "xpub", Label: "Extended public key", Secret: true,

@@ -59,16 +59,31 @@ export function EntityForm(p: Props) {
             {f.label}
             {f.optional && <em className="opt"> optional</em>}
           </span>
-          <input
-            type={f.secret ? "password" : "text"}
-            autoComplete="off"
-            spellCheck={false}
-            value={values[f.name] ?? ""}
-            placeholder={f.secret && saved.has(f.name) ? "Saved. Leave empty to keep it" : ""}
-            onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
-            required={!f.optional && !(f.secret && saved.has(f.name))}
-          />
+          {f.lines ? (
+            <textarea
+              rows={Math.max(3, (values[f.name] ?? "").split("\n").length + 1)}
+              autoComplete="off"
+              spellCheck={false}
+              value={values[f.name] ?? ""}
+              placeholder="One per line"
+              onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+              required={!f.optional && !(f.secret && saved.has(f.name))}
+            />
+          ) : (
+            <input
+              type={f.secret ? "password" : "text"}
+              autoComplete="off"
+              spellCheck={false}
+              value={values[f.name] ?? ""}
+              placeholder={f.secret && saved.has(f.name) ? "Saved. Leave empty to keep it" : ""}
+              onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+              required={!f.optional && !(f.secret && saved.has(f.name))}
+            />
+          )}
           {f.help && <small>{f.help}</small>}
+          {f.lines && f.secret && saved.has(f.name) && (
+            <small>Saved lines show hidden in the middle; keep them as they are, remove the ones you no longer want, add new ones.</small>
+          )}
         </label>
       ))}
       {p.extra}
