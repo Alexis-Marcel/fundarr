@@ -16,7 +16,9 @@ import (
 	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/internal/source/bitcoin"
+	"github.com/Alexis-Marcel/fundarr/internal/source/cardano"
 	"github.com/Alexis-Marcel/fundarr/internal/source/evm"
+	"github.com/Alexis-Marcel/fundarr/internal/source/tron"
 )
 
 func init() {
@@ -24,21 +26,22 @@ func init() {
 		Kind:        "wallet",
 		Name:        "Wallet (Ledger, Trezor…)",
 		Category:    "wallet",
-		Description: "Every account of a hardware or software wallet in one source: Bitcoin, Ethereum and EVM networks. Read-only.",
+		Description: "Every account of a hardware or software wallet in one source: Bitcoin, Ethereum and EVM networks, Litecoin, Dogecoin, Bitcoin Cash. Read-only.",
 		Fields: []source.Field{
 			{Name: "accounts", Label: "Accounts", Secret: true, Lines: true,
-				Help: "One per line. Bitcoin: the account's xpub, ypub or zpub (Ledger Live: account → ⋯ → Edit account → Advanced). " +
-					"Ethereum and EVM: the 0x… address, read on every network (" + strings.Join(evm.Networks(), ", ") + "; bsc only with an Etherscan key)."},
-			{Name: "esplora_url", Label: "Bitcoin Esplora API", Optional: true,
-				Help: "default https://mempool.space/api, then https://blockstream.info/api; point to your own mempool/electrs for privacy"},
-			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true,
-				Help: "optional. Needed for BNB Chain (bsc), which no free explorer indexes: an Etherscan plan that covers it. " +
-					"Other networks go through Etherscan v2 when the plan covers them, through free explorers otherwise"},
+				Help: "Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: the account's extended public key. In Ledger Live, open the account, then ⋯, Edit account, Advanced.\n" +
+					"Ethereum: the account's 0x… address. Fundarr reads it on every network it supports: Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis, Avalanche.\n" +
+					"Tron: the account's T… address (TRX and tokens such as USDT).\n" +
+					"Cardano: a receive address of the account (addr1…), or its stake address (stake1…); staking rewards included."},
+			{Name: "esplora_url", Label: "Bitcoin server", Optional: true, Advanced: true,
+				Help: "Your own mempool or electrs, for privacy. By default: mempool.space, then blockstream.info."},
+			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true, Advanced: true,
+				Help: "Adds BNB Chain, which no free explorer covers, with an Etherscan plan that includes it."},
 		},
-		Setup: "Fundarr only reads public keys and addresses: it can list the history, never spend. Each blockchain has its own keys, " +
-			"so add one line per account you see in Ledger Live (or your wallet app). Never type your recovery words anywhere but on " +
-			"the device itself. Keys reveal the whole history of an account, so Fundarr stores them encrypted.",
-		New: New,
+		Setup: "Fundarr only reads public keys and addresses: it sees the history, it can never spend. Add each account of the wallet below; " +
+			"Fundarr recognizes its blockchain. Never type your recovery words anywhere but on the device itself.",
+		New:    New,
+		Detect: Detect,
 	})
 }
 
@@ -54,17 +57,130 @@ type Wallet struct {
 	st       map[string]json.RawMessage
 }
 
-// kind tells which blockchain a line belongs to.
-func kind(line string) (string, error) {
-	switch {
-	case strings.HasPrefix(line, "0x") || strings.HasPrefix(line, "0X"):
-		return "evm", nil
-	case len(line) > 100 && (strings.HasPrefix(line, "xpub") || strings.HasPrefix(line, "ypub") || strings.HasPrefix(line, "zpub")):
-		return "bitcoin", nil
-	case strings.HasPrefix(line, "bc1") || strings.HasPrefix(line, "1") || strings.HasPrefix(line, "3"):
-		return "", errors.New("a single Bitcoin address only shows part of an account: give the account's xpub, ypub or zpub instead")
+// chain is a blockchain the wallet can hold accounts on.
+type chain struct {
+	kind  string // account ids and labels
+	name  string // for people
+	label string // the account's name when it is alone of its kind
+	// match recognizes a line of this chain (after any "kind:" prefix).
+	match func(line string) bool
+	// norm: lines that differ only in what norm erases are one account.
+	norm  func(line string) string
+	build func(line string, cfg source.Config) (source.Source, error)
+}
+
+func keyPrefix(ps ...string) func(string) bool {
+	return func(l string) bool {
+		for _, p := range ps {
+			if len(l) > 100 && strings.HasPrefix(l, p) {
+				return true
+			}
+		}
+		return false
 	}
-	return "", errors.New("not a supported key or address (Bitcoin xpub/ypub/zpub, or a 0x… address)")
+}
+
+func utxo(c bitcoin.Coin, esplora bool) func(string, source.Config) (source.Source, error) {
+	return func(line string, cfg source.Config) (source.Source, error) {
+		v := map[string]string{"xpub": line}
+		if esplora {
+			v["esplora_url"] = cfg.Get("esplora_url")
+		}
+		return bitcoin.NewCoin(c, source.Config{Values: v, HTTP: cfg.HTTP, State: cfg.State})
+	}
+}
+
+// chains, in the order lines are recognized. A prefix ("ltc:", "bch:"…)
+// picks the chain when the line alone cannot tell: Ledger Live shows the
+// Bitcoin Cash key as an xpub, like Bitcoin's.
+var chains = []chain{
+	{kind: "bitcoin", name: "Bitcoin", label: "bitcoin", match: keyPrefix("xpub", "ypub", "zpub"), build: utxo(bitcoin.Bitcoin, true)},
+	{kind: "litecoin", name: "Litecoin", label: "litecoin", match: keyPrefix("Ltub", "Mtub"), build: utxo(bitcoin.Litecoin, false)},
+	{kind: "dogecoin", name: "Dogecoin", label: "dogecoin", match: keyPrefix("dgub"), build: utxo(bitcoin.Dogecoin, false)},
+	{kind: "bitcoincash", name: "Bitcoin Cash", label: "bitcoin cash", match: func(string) bool { return false }, build: utxo(bitcoin.BitcoinCash, false)},
+	{kind: "evm", name: "Ethereum & EVM networks", match: func(l string) bool { return strings.HasPrefix(l, "0x") || strings.HasPrefix(l, "0X") },
+		norm: strings.ToLower,
+		build: func(line string, cfg source.Config) (source.Source, error) {
+			return evm.New(source.Config{HTTP: cfg.HTTP, State: cfg.State, Values: map[string]string{"address": line,
+				"chains": evm.All, "etherscan_key": cfg.Get("etherscan_key"), "base_url": cfg.Get("evm_base_url")}})
+		}},
+	{kind: "tron", name: "Tron", label: "tron", match: tron.Valid, build: address(tron.New)},
+	{kind: "cardano", name: "Cardano", label: "cardano", match: cardano.Valid, build: address(cardano.New)},
+}
+
+// address builds an account read from one address, by the chain's package.
+func address(build func(source.Config) (source.Source, error)) func(string, source.Config) (source.Source, error) {
+	return func(line string, cfg source.Config) (source.Source, error) {
+		return build(source.Config{HTTP: cfg.HTTP, State: cfg.State, Values: map[string]string{"address": line}})
+	}
+}
+
+// prefixes name a chain explicitly, before the key: "bch:xpub…".
+var prefixes = map[string]string{
+	"btc": "bitcoin", "bitcoin": "bitcoin",
+	"ltc": "litecoin", "litecoin": "litecoin",
+	"doge": "dogecoin", "dogecoin": "dogecoin",
+	"bch": "bitcoincash", "bitcoincash": "bitcoincash",
+	"eth": "evm", "evm": "evm",
+	"trx": "tron", "tron": "tron",
+	"ada": "cardano", "cardano": "cardano",
+}
+
+// detect tells which chain a line belongs to, and the key without prefix.
+func detect(line string) (*chain, string, error) {
+	if i := strings.Index(line, ":"); i > 0 {
+		if k, ok := prefixes[strings.ToLower(strings.TrimSpace(line[:i]))]; ok {
+			rest := strings.TrimSpace(line[i+1:])
+			for j := range chains {
+				if chains[j].kind == k {
+					return &chains[j], rest, nil
+				}
+			}
+		}
+	}
+	for j := range chains {
+		if chains[j].match(line) {
+			return &chains[j], line, nil
+		}
+	}
+	if strings.HasPrefix(line, "bc1") || strings.HasPrefix(line, "1") || strings.HasPrefix(line, "3") {
+		return nil, "", errors.New("an address shows only part of a Bitcoin account: paste the account's extended public key (xpub, ypub or zpub) instead")
+	}
+	return nil, "", errors.New("Fundarr does not recognize this key or address")
+}
+
+// short prefixes, by chain kind, used to store a chain picked by the user.
+var short = map[string]string{"bitcoin": "btc", "litecoin": "ltc", "dogecoin": "doge", "bitcoincash": "bch", "evm": "evm", "tron": "tron", "cardano": "cardano"}
+
+// Detect recognizes one account and checks it can be read.
+func Detect(line string) (source.Detected, error) {
+	line = strings.TrimSpace(line)
+	c, key, err := detect(line)
+	if err != nil {
+		return source.Detected{}, err
+	}
+	if _, err := c.build(key, source.Config{Values: map[string]string{}}); err != nil {
+		return source.Detected{}, err
+	}
+	d := source.Detected{Chain: c.name, Value: line}
+	// A plain xpub can be any of the Bitcoin-like chains.
+	if strings.HasPrefix(key, "xpub") {
+		for _, k := range []string{"bitcoin", "bitcoincash", "litecoin", "dogecoin"} {
+			for j := range chains {
+				if chains[j].kind != k {
+					continue
+				}
+				if _, err := chains[j].build(key, source.Config{Values: map[string]string{}}); err == nil {
+					v := short[k] + ":" + key
+					if k == "bitcoin" {
+						v = key
+					}
+					d.Choices = append(d.Choices, source.Choice{Chain: chains[j].name, Value: v})
+				}
+			}
+		}
+	}
+	return d, nil
 }
 
 // Lines splits the accounts field: one per line, blank lines and # comments
@@ -91,56 +207,45 @@ func New(cfg source.Config) (source.Source, error) {
 			return nil, fmt.Errorf("wallet: bad saved state: %w", err)
 		}
 	}
-	type parsed struct{ kind, line, id string }
+	type parsed struct {
+		c        *chain
+		line, id string
+	}
 	var ps []parsed
 	count := map[string]int{}
 	seen := map[string]bool{}
 	for i, l := range lines {
-		k, err := kind(l)
+		c, key, err := detect(l)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", i+1, err)
+			return nil, fmt.Errorf("account %d: %w", i+1, err)
 		}
-		norm := l
-		if k == "evm" {
-			norm = strings.ToLower(l)
+		norm := key
+		if c.norm != nil {
+			norm = c.norm(key)
 		}
-		if seen[norm] {
-			return nil, fmt.Errorf("line %d: this account is already in the list", i+1)
+		if seen[c.kind+norm] {
+			return nil, fmt.Errorf("account %d: this account is already in the list", i+1)
 		}
-		seen[norm] = true
+		seen[c.kind+norm] = true
 		sum := sha256.Sum256([]byte(norm))
-		ps = append(ps, parsed{k, l, k + "-" + hex.EncodeToString(sum[:4])})
-		count[k]++
+		ps = append(ps, parsed{c, key, c.kind + "-" + hex.EncodeToString(sum[:4])})
+		count[c.kind]++
 	}
 	for i, p := range ps {
-		sub := source.Config{HTTP: cfg.HTTP, State: w.st[p.id]}
-		var label string
-		var err error
-		switch p.kind {
-		case "bitcoin":
-			sub.Values = map[string]string{"xpub": p.line, "esplora_url": cfg.Get("esplora_url")}
-			label = "bitcoin"
-			if count["bitcoin"] > 1 {
-				label += " …" + p.line[len(p.line)-4:]
+		label := p.c.label
+		if count[p.c.kind] > 1 {
+			// Several accounts of a chain: the end of the key tells them apart.
+			tail := "…" + p.line[len(p.line)-4:]
+			if p.c.norm != nil {
+				tail = p.c.norm(tail)
 			}
-			var s source.Source
-			if s, err = bitcoin.New(sub); err == nil {
-				w.accounts = append(w.accounts, account{p.id, label, s})
-			}
-		case "evm":
-			sub.Values = map[string]string{"address": p.line, "chains": evm.All, "etherscan_key": cfg.Get("etherscan_key"),
-				"base_url": cfg.Get("evm_base_url")}
-			if count["evm"] > 1 {
-				label = "…" + strings.ToLower(p.line[len(p.line)-4:])
-			}
-			var s source.Source
-			if s, err = evm.New(sub); err == nil {
-				w.accounts = append(w.accounts, account{p.id, label, s})
-			}
+			label = strings.TrimSpace(label + " " + tail)
 		}
+		s, err := p.c.build(p.line, source.Config{Values: cfg.Values, HTTP: cfg.HTTP, State: w.st[p.id]})
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", i+1, err)
+			return nil, fmt.Errorf("account %d: %w", i+1, err)
 		}
+		w.accounts = append(w.accounts, account{p.id, label, s})
 	}
 	return w, nil
 }
@@ -227,7 +332,9 @@ func internal(acts []model.Activity) []model.Activity {
 			continue
 		}
 		o, in := acts[os[0]], acts[is[0]]
-		if in.Base.Qty.GreaterThan(o.Base.Qty) {
+		// Only between two accounts: a contract refunding part of what one
+		// account sent, in the same transaction, is not a transfer.
+		if owner(o) == owner(in) || in.Base.Qty.GreaterThan(o.Base.Qty) {
 			continue
 		}
 		drop[os[0]], drop[is[0]] = true, true
@@ -256,6 +363,12 @@ func internal(acts []model.Activity) []model.Activity {
 	out = append(out, fees...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
 	return out
+}
+
+// owner is the account an activity came from (its id prefixes NativeID).
+func owner(a model.Activity) string {
+	id, _, _ := strings.Cut(a.NativeID, ":")
+	return id
 }
 
 func nameOr(s, def string) string {

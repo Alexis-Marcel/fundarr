@@ -6,18 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 // client talks to an Esplora REST API (mempool.space, blockstream.info,
-// a self-hosted electrs).
+// a self-hosted electrs) or a Blockbook.
 type client struct {
-	base string
+	base      string
+	blockbook bool // base is a Blockbook, not an Esplora
 	// fallback: other public servers tried in turn when base stops
 	// answering (only with the default, never past a server the user chose).
-	fallback []string
+	fallback []server
 	http     *http.Client
 	pause    time.Duration
 	sleep    func(context.Context, time.Duration) error
@@ -76,7 +78,7 @@ func (c *client) failover() bool {
 	if len(c.fallback) == 0 {
 		return false
 	}
-	c.base, c.fallback = c.fallback[0], c.fallback[1:]
+	c.base, c.blockbook, c.fallback = c.fallback[0].url, c.fallback[0].blockbook, c.fallback[1:]
 	return true
 }
 
@@ -153,7 +155,16 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 	}
 }
 
+func (c *client) isBlockbook() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blockbook
+}
+
 func (c *client) address(ctx context.Context, addr string) (addrStats, error) {
+	if c.isBlockbook() {
+		return c.bbAddress(ctx, addr)
+	}
 	var s addrStats
 	err := c.get(ctx, "/address/"+addr, &s)
 	return s, err
@@ -161,6 +172,9 @@ func (c *client) address(ctx context.Context, addr string) (addrStats, error) {
 
 // chainTxs returns every confirmed transaction of an address, 25 per page.
 func (c *client) chainTxs(ctx context.Context, addr string) ([]tx, error) {
+	if c.isBlockbook() {
+		return c.bbTxs(ctx, addr)
+	}
 	var all []tx
 	path := "/address/" + addr + "/txs/chain"
 	for {
@@ -173,5 +187,81 @@ func (c *client) chainTxs(ctx context.Context, addr string) ([]tx, error) {
 			return all, nil
 		}
 		path = "/address/" + addr + "/txs/chain/" + page[len(page)-1].TxID
+	}
+}
+
+// ---- Blockbook: the same facts, other words.
+
+type bbAddr struct {
+	Balance        string `json:"balance"`
+	TotalReceived  string `json:"totalReceived"`
+	TotalSent      string `json:"totalSent"`
+	Txs            int    `json:"txs"`
+	UnconfirmedTxs int    `json:"unconfirmedTxs"`
+	TotalPages     int    `json:"totalPages"`
+	Transactions   []struct {
+		TxID          string `json:"txid"`
+		BlockTime     int64  `json:"blockTime"`
+		Confirmations int64  `json:"confirmations"`
+		Fees          string `json:"fees"`
+		Vin           []bbIO `json:"vin"`
+		Vout          []bbIO `json:"vout"`
+	} `json:"transactions"`
+}
+
+type bbIO struct {
+	Addresses []string `json:"addresses"`
+	Value     string   `json:"value"`
+}
+
+func (io bbIO) output() *output {
+	o := &output{}
+	if len(io.Addresses) > 0 {
+		o.Address = io.Addresses[0]
+	}
+	o.Value, _ = strconv.ParseInt(io.Value, 10, 64)
+	return o
+}
+
+func (c *client) bbAddress(ctx context.Context, addr string) (addrStats, error) {
+	var a bbAddr
+	if err := c.get(ctx, "/address/"+addr+"?details=basic", &a); err != nil {
+		return addrStats{}, err
+	}
+	var s addrStats
+	s.Chain.TxCount = a.Txs - a.UnconfirmedTxs
+	s.Chain.Funded, _ = strconv.ParseInt(a.TotalReceived, 10, 64)
+	s.Chain.Spent, _ = strconv.ParseInt(a.TotalSent, 10, 64)
+	s.Mempool.TxCount = a.UnconfirmedTxs
+	return s, nil
+}
+
+func (c *client) bbTxs(ctx context.Context, addr string) ([]tx, error) {
+	var all []tx
+	for page := 1; ; page++ {
+		var a bbAddr
+		if err := c.get(ctx, fmt.Sprintf("/address/%s?details=txs&pageSize=1000&page=%d", addr, page), &a); err != nil {
+			return nil, err
+		}
+		for _, bt := range a.Transactions {
+			if bt.Confirmations <= 0 || bt.BlockTime == 0 {
+				continue
+			}
+			t := tx{TxID: bt.TxID}
+			t.Fee, _ = strconv.ParseInt(bt.Fees, 10, 64)
+			t.Status.Confirmed, t.Status.BlockTime = true, bt.BlockTime
+			for _, in := range bt.Vin {
+				t.Vin = append(t.Vin, struct {
+					Prevout *output `json:"prevout"`
+				}{in.output()})
+			}
+			for _, o := range bt.Vout {
+				t.Vout = append(t.Vout, *o.output())
+			}
+			all = append(all, t)
+		}
+		if page >= a.TotalPages {
+			return all, nil
+		}
 	}
 }

@@ -1,6 +1,7 @@
 // Package bitcoin reads a Bitcoin wallet from its extended public key (xpub,
 // ypub or zpub): addresses are derived locally, history and balances come
 // from an Esplora API (mempool.space by default, or your own instance).
+// Litecoin, Dogecoin and Bitcoin Cash are read the same way (see Coin).
 package bitcoin
 
 import (
@@ -19,9 +20,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/shopspring/decimal"
 )
-
-// fallbackEsplora: public servers tried when the default does not answer.
-var fallbackEsplora = []string{"https://blockstream.info/api"}
 
 const (
 	defaultEsplora = "https://mempool.space/api"
@@ -60,35 +58,23 @@ const (
 	p2tr       scriptType = "p2tr"        // taproot, bc1p…
 )
 
-// Version bytes of the serialized extended public keys (SLIP-132).
-var (
-	verXpub = [4]byte{0x04, 0x88, 0xb2, 0x1e}
-	verYpub = [4]byte{0x04, 0x9d, 0x7c, 0xb2}
-	verZpub = [4]byte{0x04, 0xb2, 0x47, 0x46}
-)
-
 // parseKey decodes an xpub/ypub/zpub and says which address formats to scan.
 // A plain xpub does not say its format (Ledger Live shows xpub for every
 // account type), so all four are scanned and the ones with activity kept.
-func parseKey(s string) (*hdkeychain.ExtendedKey, []scriptType, error) {
+func parseKey(s string) (*hdkeychain.ExtendedKey, []scriptType, error) { return Bitcoin.parseKey(s) }
+
+func (c Coin) parseKey(s string) (*hdkeychain.ExtendedKey, []scriptType, error) {
 	s = strings.TrimSpace(s)
 	raw, ver, err := base58.CheckDecode(s)
 	if err != nil || len(raw) != 77 {
-		return nil, nil, errors.New("not an extended public key (expected xpub…, ypub… or zpub…)")
+		return nil, nil, fmt.Errorf("not a %s extended public key", c.Name)
 	}
 	var v [4]byte
 	v[0] = ver
 	copy(v[1:], raw[:3])
-	var types []scriptType
-	switch v {
-	case verXpub:
-		types = []scriptType{p2wpkh, p2tr, p2shP2wpkh, p2pkh}
-	case verYpub:
-		types = []scriptType{p2shP2wpkh}
-	case verZpub:
-		types = []scriptType{p2wpkh}
-	default:
-		return nil, nil, errors.New("only mainnet xpub, ypub and zpub keys are supported (private keys and testnet keys are refused)")
+	types, ok := c.keys[v]
+	if !ok {
+		return nil, nil, fmt.Errorf("not a %s extended public key (private keys and testnet keys are refused)", c.Name)
 	}
 	// Re-encode with xpub version bytes so hdkeychain accepts it.
 	buf := append([]byte{verXpub[1], verXpub[2], verXpub[3]}, raw[3:]...)
@@ -102,8 +88,9 @@ func parseKey(s string) (*hdkeychain.ExtendedKey, []scriptType, error) {
 	return k, types, nil
 }
 
-// Bitcoin is a configured wallet.
-type Bitcoin struct {
+// Wallet is a configured account of a Coin.
+type Wallet struct {
+	coin  Coin
 	key   *hdkeychain.ExtendedKey
 	types []scriptType
 	c     *client
@@ -119,25 +106,33 @@ type state struct {
 	TxCounts map[string]int `json:"txCounts,omitempty"`
 }
 
-// New builds the source from its settings.
-func New(cfg source.Config) (source.Source, error) {
-	key, types, err := parseKey(cfg.Get("xpub"))
+// New builds a Bitcoin wallet from its settings.
+func New(cfg source.Config) (source.Source, error) { return NewCoin(Bitcoin, cfg) }
+
+// NewCoin builds a wallet of any Coin: cfg "xpub" is the account key, and
+// "esplora_url" (Bitcoin and Litecoin) replaces the public servers.
+func NewCoin(coin Coin, cfg source.Config) (source.Source, error) {
+	key, types, err := coin.parseKey(cfg.Get("xpub"))
 	if err != nil {
 		return nil, err
 	}
 	base := strings.TrimRight(strings.TrimSpace(cfg.Get("esplora_url")), "/")
-	var fallback []string
+	var first server
+	var fallback []server
 	if base == "" {
-		base, fallback = defaultEsplora, append([]string(nil), fallbackEsplora...)
-	} else if !strings.HasPrefix(base, "http") {
-		base = "https://" + base
+		first, fallback = coin.servers[0], append([]server(nil), coin.servers[1:]...)
+	} else {
+		if !strings.HasPrefix(base, "http") {
+			base = "https://" + base
+		}
+		first = server{url: base}
 	}
 	hc := cfg.HTTP
 	if hc == nil {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
-	b := &Bitcoin{key: key, types: types, now: time.Now,
-		c: &client{base: base, fallback: fallback, http: hc, pause: 120 * time.Millisecond, sleep: sleepCtx}}
+	b := &Wallet{coin: coin, key: key, types: types, now: time.Now,
+		c: &client{base: first.url, blockbook: first.blockbook, fallback: fallback, http: hc, pause: 120 * time.Millisecond, sleep: sleepCtx}}
 	if len(cfg.State) > 0 {
 		_ = json.Unmarshal(cfg.State, &b.st)
 	}
@@ -147,14 +142,14 @@ func New(cfg source.Config) (source.Source, error) {
 	return b, nil
 }
 
-func (b *Bitcoin) State() []byte {
+func (b *Wallet) State() []byte {
 	raw, _ := json.Marshal(b.st)
 	return raw
 }
 
 // Test checks the key and that the Esplora API answers.
-func (b *Bitcoin) Test(ctx context.Context) error {
-	addr, err := deriveAddress(b.key, b.types[0], 0, 0)
+func (b *Wallet) Test(ctx context.Context) error {
+	addr, err := b.coin.derive(b.key, b.types[0], 0, 0)
 	if err != nil {
 		return err
 	}
@@ -174,7 +169,7 @@ type scan struct {
 	used  []used
 }
 
-func (b *Bitcoin) scan(ctx context.Context, progress func(string, ...any)) (*scan, error) {
+func (b *Wallet) scan(ctx context.Context, progress func(string, ...any)) (*scan, error) {
 	if b.scanned != nil {
 		return b.scanned, nil
 	}
@@ -184,7 +179,7 @@ func (b *Bitcoin) scan(ctx context.Context, progress func(string, ...any)) (*sca
 		for chain := uint32(0); chain <= 1; chain++ {
 			gap := 0
 			for i := uint32(0); gap < GapLimit; i++ {
-				addr, err := deriveAddress(b.key, t, chain, i)
+				addr, err := b.coin.derive(b.key, t, chain, i)
 				if err != nil {
 					return nil, err
 				}
@@ -203,7 +198,7 @@ func (b *Bitcoin) scan(ctx context.Context, progress func(string, ...any)) (*sca
 			}
 		}
 		if progress != nil {
-			progress("Bitcoin: %s scanned, %d addresses checked, %d used", t, total, len(s.used))
+			progress("%s: %s scanned, %d addresses checked, %d used", b.coin.Name, t, total, len(s.used))
 		}
 	}
 	b.scanned = s
@@ -214,9 +209,7 @@ func (b *Bitcoin) scan(ctx context.Context, progress func(string, ...any)) (*sca
 
 func sats(v int64) decimal.Decimal { return decimal.New(v, -8) }
 
-var btc = model.Asset{Kind: model.Crypto, Symbol: "BTC"}
-
-func (b *Bitcoin) Activities(ctx context.Context, f source.Fetch) error {
+func (b *Wallet) Activities(ctx context.Context, f source.Fetch) error {
 	progress := f.Progress
 	if progress == nil {
 		progress = func(string, ...any) {}
@@ -245,7 +238,7 @@ func (b *Bitcoin) Activities(ctx context.Context, f source.Fetch) error {
 		}
 		b.st.TxCounts[u.addr] = count
 	}
-	progress("Bitcoin: %d transactions read", fetched)
+	progress("%s: %d transactions read", b.coin.Name, fetched)
 
 	ids := make([]string, 0, len(txs))
 	for id := range txs {
@@ -253,7 +246,7 @@ func (b *Bitcoin) Activities(ctx context.Context, f source.Fetch) error {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		for _, a := range classify(txs[id], s.owned) {
+		for _, a := range b.coin.classify(txs[id], s.owned) {
 			if err := f.Emit(a); err != nil {
 				return err
 			}
@@ -262,8 +255,11 @@ func (b *Bitcoin) Activities(ctx context.Context, f source.Fetch) error {
 	return nil
 }
 
+func classify(t tx, owned map[string]bool) []model.Activity { return Bitcoin.classify(t, owned) }
+
 // classify turns one transaction into what it means for the wallet.
-func classify(t tx, owned map[string]bool) []model.Activity {
+func (c Coin) classify(t tx, owned map[string]bool) []model.Activity {
+	btc := c.asset()
 	if !t.Status.Confirmed || t.Status.BlockTime == 0 {
 		return nil
 	}
@@ -285,7 +281,7 @@ func classify(t tx, owned map[string]bool) []model.Activity {
 		}
 	}
 	at := time.Unix(t.Status.BlockTime, 0).UTC()
-	base := model.Activity{NativeID: t.TxID, Time: at, Network: "BTC", TxID: t.TxID}
+	base := model.Activity{NativeID: t.TxID, Time: at, Network: c.Symbol, TxID: t.TxID}
 	if ins == 0 && outs == 0 {
 		return nil
 	}
@@ -327,7 +323,7 @@ func classify(t tx, owned map[string]bool) []model.Activity {
 // ---- balances
 
 // Balances sums the confirmed funds of every used address.
-func (b *Bitcoin) Balances(ctx context.Context) ([]model.Balance, error) {
+func (b *Wallet) Balances(ctx context.Context) ([]model.Balance, error) {
 	s, err := b.scan(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -339,5 +335,5 @@ func (b *Bitcoin) Balances(ctx context.Context) ([]model.Balance, error) {
 	if total == 0 {
 		return nil, nil
 	}
-	return []model.Balance{{Amount: model.Amount{Asset: btc, Qty: sats(total)}}}, nil
+	return []model.Balance{{Amount: model.Amount{Asset: b.coin.asset(), Qty: sats(total)}}}, nil
 }

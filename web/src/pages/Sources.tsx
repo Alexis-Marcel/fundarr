@@ -125,6 +125,7 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
         </div>
       ) : (
         <EntityForm
+          kind={def.kind}
           defName={def.name}
           fields={def.fields}
           setup={def.setup}

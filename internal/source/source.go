@@ -23,6 +23,8 @@ type Field struct {
 	// Lines: one value per line (a list). A secret list comes back to the
 	// UI masked line by line; masked lines sent back keep their stored value.
 	Lines bool `json:"lines,omitempty"`
+	// Advanced: rarely needed, tucked away in the form.
+	Advanced bool `json:"advanced,omitempty"`
 }
 
 // Definition describes a kind of source.
@@ -40,11 +42,28 @@ type Definition struct {
 	// Limits says what the platform's API cannot tell, shown where balance
 	// corrections are, so the user knows why they exist.
 	Limits string `json:"limits,omitempty"`
+	// Detect, for a Lines field, recognizes one value (a key, an address)
+	// so the UI can say what it is before saving.
+	Detect func(value string) (Detected, error) `json:"-"`
 	// Hidden: kept for sources already set up, not offered for new ones
 	// (another kind covers it).
 	Hidden bool `json:"hidden,omitempty"`
 	// New builds a connector from its settings (secrets decrypted).
 	New func(cfg Config) (Source, error) `json:"-"`
+}
+
+// Detected is what a value of a list is: Chain names it for people; Value
+// is how to store it (it may gain a prefix that picks the chain). Choices
+// are the other chains the same value can be read on.
+type Detected struct {
+	Chain   string   `json:"chain"`
+	Value   string   `json:"value"`
+	Choices []Choice `json:"choices,omitempty"`
+}
+
+type Choice struct {
+	Chain string `json:"chain"`
+	Value string `json:"value"`
 }
 
 // Config is what a connector receives: its settings and an HTTP client.

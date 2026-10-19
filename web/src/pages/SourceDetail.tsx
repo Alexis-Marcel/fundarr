@@ -138,8 +138,10 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
             fields={def.fields}
             setup={def.setup}
             initialName={src.name}
-            settings={{ ...src.settings, ...src.secretLines }}
+            kind={src.kind}
+            settings={src.settings}
             secretsSet={src.secretsSet}
+            secretItems={src.secretItems}
             saveLabel="Save"
             onTest={async (name, values) => {
               await api.testSource({ id: src.id, name, values });
