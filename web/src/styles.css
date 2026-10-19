@@ -892,3 +892,43 @@ input[type="date"] {
   display: grid;
   gap: 0.2rem;
 }
+
+/* Balance corrections and transfers */
+.tag-corrected,
+.tag-adjustment {
+  background: color-mix(in srgb, var(--brass) 16%, transparent);
+  color: var(--brass-hi);
+}
+.tag-entered {
+  background: color-mix(in srgb, var(--run) 14%, transparent);
+  color: var(--run);
+}
+.corrections {
+  margin-top: 2.25rem;
+}
+.corrections h2,
+.section-title {
+  margin: 2rem 0 0.6rem;
+}
+.corrections h2 {
+  margin-top: 0;
+  margin-bottom: 0.6rem;
+}
+.choices {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+.field-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 0.75rem;
+}
+.settings-card + .settings-card {
+  margin-top: 1rem;
+}
+.settings-card h2 {
+  margin-bottom: 0.75rem;
+}

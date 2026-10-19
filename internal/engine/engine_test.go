@@ -37,6 +37,7 @@ var (
 	sink     []dest.Batch
 	sinkFail map[string]bool
 	sinkErr  error
+	sinkCcy  string
 )
 
 func init() {
@@ -70,7 +71,7 @@ func (f *fakeSrc) State() []byte                                     { return []
 type sinkDest struct{}
 
 func (sinkDest) Accounts(context.Context) ([]dest.Account, error) {
-	return []dest.Account{{ID: "a1", Name: "Main"}}, nil
+	return []dest.Account{{ID: "a1", Name: "Main", Currency: sinkCcy}}, nil
 }
 func (sinkDest) Push(_ context.Context, b dest.Batch) ([]dest.Result, error) {
 	sink = append(sink, b)
@@ -141,13 +142,17 @@ func TestSyncPushReconcile(t *testing.T) {
 	fakeActs = append(fakeActs, dep("3", "1", t0.Add(2*time.Hour)))
 	sinkFail = map[string]bool{}
 	res, err = e.Sync(ctx, "s")
-	if err != nil || res.New != 1 || len(res.Gaps) != 1 || !res.Gaps[0].Diff.Equal(model.Amt(model.CryptoOrFiat("BTC"), "-1").Qty) {
+	if err != nil || res.New != 1 || len(res.Gaps) != 0 || res.Adjusted != 1 {
 		t.Fatalf("resync %+v %v", res, err)
+	}
+	adjs, _ := e.Store.Adjustments(ctx, "s")
+	if len(adjs) != 1 || adjs[0].Side != model.Out || adjs[0].Base.Qty.String() != "1" || adjs[0].Delivered {
+		t.Fatalf("correction %+v", adjs)
 	}
 	if !fakeSeen[1].Since.Equal(src.LastOK) {
 		t.Fatal("incremental since last ok")
 	}
-	// The failed one is retried along with the new one.
+	// The failed one is retried along with the new one; the correction waits.
 	last := sink[len(sink)-1]
 	if len(last.Activities) != 2 || last.Activities[0].NativeID != "2" || last.Activities[1].NativeID != "3" {
 		t.Fatalf("retry %+v", last.Activities)
@@ -162,7 +167,7 @@ func TestSyncPushReconcile(t *testing.T) {
 		t.Fatalf("push %+v %v", pr, err)
 	}
 	runs, _ := e.Store.Runs(ctx, "s", 10)
-	if len(runs) != 2 || runs[0].Summary != "1 fetched, 1 new, 1 balance gap(s)" && runs[0].Summary != "3 fetched, 1 new, 1 balance gap(s)" {
+	if len(runs) != 2 || runs[0].Summary != "3 fetched, 1 new, 1 asset(s) corrected" {
 		t.Fatalf("runs %+v", runs)
 	}
 
@@ -176,7 +181,7 @@ func TestSyncPushReconcile(t *testing.T) {
 	if src2.LastErr != "rate limited" || !src2.LastOK.Equal(src.LastOK) && src2.LastOK.Before(src.LastOK) {
 		t.Fatalf("after error %+v", src2)
 	}
-	if n, _ := e.Store.CountActivities(ctx, "s"); n != 4 {
+	if n, _ := e.Store.CountActivities(ctx, "s"); n != 5 { // 4 and the correction
 		t.Fatalf("kept %d", n)
 	}
 
@@ -255,6 +260,7 @@ func TestResyncStartsFromScratch(t *testing.T) {
 	sealed, _ := e.Seal(map[string]string{"secret": "s3cret"})
 	_ = e.Store.PutSource(ctx, &store.Entity{ID: "s", Kind: "fake", Name: "Fake", Secrets: sealed, Enabled: true})
 	fakeActs = []model.Activity{dep("1", "1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))}
+	fakeBal = []model.Balance{{Amount: model.Amt(model.CryptoOrFiat("BTC"), "1")}}
 	if _, err := e.Sync(ctx, "s"); err != nil {
 		t.Fatal(err)
 	}
@@ -320,5 +326,119 @@ func TestImportStatement(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("import run %+v", runs)
+	}
+}
+
+func TestCorrectionsWaitAndReclassify(t *testing.T) {
+	e, ctx := setup(t)
+	now := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+	e.Now = func() time.Time { return now }
+	e.Store.Clock = e.Now
+	sealed, _ := e.Seal(map[string]string{"secret": "s3cret"})
+	_ = e.Store.PutSource(ctx, &store.Entity{ID: "s", Kind: "fake", Name: "Fake", Secrets: sealed, Enabled: true})
+	_ = e.Store.PutDestination(ctx, &store.Entity{ID: "d", Kind: "sink", Name: "Sink", Enabled: true})
+	_ = e.Store.PutRoute(ctx, store.Route{DestinationID: "d", SourceID: "s", Account: "a1"})
+	// 1 BTC arrived, 3 are held: 2 are missing from the history.
+	fakeActs = []model.Activity{dep("1", "1", time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))}
+	fakeBal = []model.Balance{{Amount: model.Amt(model.CryptoOrFiat("BTC"), "3")}}
+	res, err := e.Sync(ctx, "s")
+	if err != nil || res.Adjusted != 1 || len(res.Gaps) != 0 {
+		t.Fatalf("sync %+v %v", res, err)
+	}
+	if len(sink) != 1 || len(sink[0].Activities) != 1 {
+		t.Fatalf("the correction waits: %+v", sink)
+	}
+	// The same gap the next day: the same correction, still waiting.
+	now = now.Add(24 * time.Hour)
+	e.Sync(ctx, "s")
+	adjs, _ := e.Store.Adjustments(ctx, "s")
+	if len(adjs) != 1 || !adjs[0].Created.Before(now.Add(-23*time.Hour)) || len(sink) != 1 {
+		t.Fatalf("stable %+v, %d pushes", adjs, len(sink))
+	}
+	// The user says what it was: a purchase for 60000 EUR.
+	_, err = e.Reclassify(ctx, "s", adjs[0].ID, Reclassify{As: "buy", Quote: model.Amt(model.CryptoOrFiat("EUR"), "60000")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The BTC correction is gone; the EUR paid, which the history does not
+	// show arriving, gets its own.
+	if adjs, _ := e.Store.Adjustments(ctx, "s"); len(adjs) != 1 || adjs[0].Base.Asset.Symbol != "EUR" || adjs[0].Side != model.In {
+		t.Fatalf("replaced %+v", adjs)
+	}
+	acts, _ := e.Store.Activities(ctx, store.ActivityFilter{SourceID: "s"})
+	var manual model.Activity
+	for _, a := range acts {
+		if strings.HasPrefix(a.NativeID, model.ManualPrefix) {
+			manual = a
+		}
+	}
+	if manual.Type != model.Trade || manual.Quote == nil || manual.Quote.Asset.Kind != model.Fiat || manual.Base.Qty.String() != "2" {
+		t.Fatalf("manual %+v", manual)
+	}
+	if _, err := e.Reclassify(ctx, "s", manual.ID, Reclassify{As: "reward"}); err == nil {
+		t.Fatal("only corrections are reclassified")
+	}
+	// Removing it brings the correction back; after the wait it goes out.
+	if err := e.DeleteManual(ctx, "s", manual.ID); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(Hold + time.Hour)
+	e.Sync(ctx, "s")
+	last := sink[len(sink)-1]
+	if len(last.Activities) != 1 || last.Activities[0].Type != model.Adjustment {
+		t.Fatalf("pushed %+v", last.Activities)
+	}
+	adjs, _ = e.Store.Adjustments(ctx, "s")
+	if len(adjs) != 1 || !adjs[0].Delivered {
+		t.Fatalf("delivered %+v", adjs)
+	}
+	if _, err := e.Reclassify(ctx, "s", adjs[0].ID, Reclassify{As: "reward"}); !errors.Is(err, ErrDelivered) {
+		t.Fatalf("delivered corrections stay: %v", err)
+	}
+	// History catches up: a counter-correction, since the first one went out.
+	fakeActs = append(fakeActs, dep("2", "2", time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)))
+	e.Sync(ctx, "s")
+	adjs, _ = e.Store.Adjustments(ctx, "s")
+	if len(adjs) != 2 || adjs[1].Side != model.Out || adjs[1].Base.Qty.String() != "2" {
+		t.Fatalf("counter %+v", adjs)
+	}
+	// Turned off: pending corrections go away, delivered ones stay.
+	ent, _ := e.Store.Source(ctx, "s")
+	ent.Settings = map[string]string{AdjustSetting: "off"}
+	_ = e.Store.PutSource(ctx, ent)
+	res, _ = e.Sync(ctx, "s")
+	if adjs, _ := e.Store.Adjustments(ctx, "s"); len(adjs) != 1 || len(res.Gaps) != 1 {
+		t.Fatalf("off %+v %+v", adjs, res)
+	}
+}
+
+func TestPushCarriesTransfersAndCosts(t *testing.T) {
+	e, ctx := setup(t)
+	sealed, _ := e.Seal(map[string]string{"secret": "s3cret"})
+	for _, id := range []string{"ex", "wallet"} {
+		_ = e.Store.PutSource(ctx, &store.Entity{ID: id, Kind: "fake", Name: strings.ToUpper(id), Secrets: sealed, Enabled: false})
+	}
+	_ = e.Store.PutDestination(ctx, &store.Entity{ID: "d", Kind: "sink", Name: "Sink", Enabled: true})
+	_ = e.Store.PutRoute(ctx, store.Route{DestinationID: "d", SourceID: "wallet", Account: "a1"})
+	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	eur := model.Amt(model.CryptoOrFiat("EUR"), "30000")
+	buy := model.Activity{NativeID: "b", Time: t0, Type: model.Trade, Side: model.Buy, Base: model.Amt(model.CryptoOrFiat("BTC"), "1"), Quote: &eur}
+	out := model.Activity{NativeID: "w", Time: t0.Add(time.Hour), Type: model.Withdrawal, Base: model.Amt(model.CryptoOrFiat("BTC"), "1"), TxID: "aaaaaaaaaaaaaaaaaaaaaaaa"}
+	in := model.Activity{NativeID: "d", Time: t0.Add(2 * time.Hour), Type: model.Deposit, Base: model.Amt(model.CryptoOrFiat("BTC"), "1"), TxID: "aaaaaaaaaaaaaaaaaaaaaaaa"}
+	for src, a := range map[string]model.Activity{"ex": buy, "wallet": in} {
+		a.SourceID, a.ID = src, model.ActivityID(src, a.NativeID)
+		e.Store.AddActivities(ctx, []model.Activity{a})
+	}
+	out.SourceID, out.ID = "ex", model.ActivityID("ex", "w")
+	e.Store.AddActivities(ctx, []model.Activity{out})
+	sinkCcy = "EUR"
+	defer func() { sinkCcy = "" }()
+	if _, err := e.Push(ctx, "d"); err != nil {
+		t.Fatal(err)
+	}
+	b := sink[0]
+	id := model.ActivityID("wallet", "d")
+	if b.Transfers[id] != "EX" || b.Costs[id].String() != "30000" {
+		t.Fatalf("batch %+v", b)
 	}
 }

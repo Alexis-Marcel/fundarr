@@ -85,3 +85,18 @@ export function monogram(kind: string) {
   for (const c of kind) h = (h * 31 + c.charCodeAt(0)) % 360;
   return [kind.slice(0, 2).toUpperCase(), h] as [string, number];
 }
+
+/** A value in a currency: "1 234.50 EUR". */
+export function money(v: string | undefined, ccy: string): string {
+  if (!v) return "";
+  const n = Number(v);
+  try {
+    return n.toLocaleString("en", { style: "currency", currency: ccy, maximumFractionDigits: 2 });
+  } catch {
+    return `${n.toFixed(2)} ${ccy}`;
+  }
+}
+
+export function day(iso: string) {
+  return new Date(iso).toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric" });
+}

@@ -34,10 +34,12 @@ func Holdings(acts []Activity) map[string]Amount {
 					add(*a.Quote, 1)
 				}
 			}
-		case Deposit, Reward, Dividend, Interest:
-			add(a.Base, 1)
-		case Withdrawal, Fee, Tax:
-			add(a.Base, -1)
+		default:
+			if a.Inflow() {
+				add(a.Base, 1)
+			} else if a.Outflow() {
+				add(a.Base, -1)
+			}
 		}
 		if a.Fee != nil {
 			add(*a.Fee, -1)

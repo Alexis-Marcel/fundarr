@@ -22,6 +22,7 @@ export function statusText(s: Source): string {
   if (isZeroTime(s.lastOk)) return "Waiting for its first sync";
   if (s.gaps && s.gaps.length > 0)
     return `History and balance differ on ${s.gaps.map((g) => g.asset.symbol).join(", ")}`;
+  if (s.corrections > 0) return `Matches the balances, with ${s.corrections} correction${s.corrections > 1 ? "s" : ""}`;
   return "History matches the balances";
 }
 

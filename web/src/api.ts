@@ -16,6 +16,7 @@ export interface SourceDef {
   fields: Field[];
   setup?: string;
   statement?: string; // how to export the platform's statement (import supported)
+  limits?: string; // what the platform's API cannot tell
 }
 
 export interface DestDef {
@@ -62,6 +63,8 @@ export interface Source {
   balancesAt: string;
   gaps: Gap[] | null;
   secretsSet: string[] | null;
+  corrections: number; // balance corrections in the history
+  adjust: boolean; // whether Fundarr makes them
 }
 
 export interface Destination {
@@ -93,8 +96,9 @@ export interface Activity {
   id: string;
   nativeId: string;
   time: string;
+  sourceId?: string;
   type: string;
-  side?: "buy" | "sell";
+  side?: "buy" | "sell" | "in" | "out";
   base: Amount;
   quote?: Amount;
   fee?: Amount;
@@ -106,8 +110,41 @@ export interface Activity {
 export interface HoldingLine {
   asset: Asset;
   replayed: string;
+  correction: string;
   reported: string;
   gap: boolean;
+}
+
+export interface Adjustment extends Activity {
+  created: string;
+  delivered: boolean;
+  releaseAt: string;
+  value?: string;
+  currency: string;
+}
+
+export interface Reclassify {
+  as: "reward" | "deposit" | "buy" | "withdrawal" | "sell" | "fee";
+  time?: string;
+  quote?: { asset: { symbol: string }; qty: string };
+  note?: string;
+}
+
+export interface Side extends Activity {
+  source: string;
+}
+
+export interface Transfers {
+  currency: string;
+  sources: number;
+  pairs: { by: "txid" | "amount" | "user"; out: Side; in: Side; cost?: string }[];
+  unmatched: { out: Side; candidates: Side[] }[];
+}
+
+export interface AppSettings {
+  currency: string;
+  currencies: string[];
+  prices: boolean;
 }
 
 export interface Run {
@@ -181,6 +218,7 @@ export interface EntityInput {
   enabled?: boolean;
   intervalMinutes?: number;
   skipTest?: boolean;
+  adjust?: boolean;
 }
 
 export const api = {
@@ -201,6 +239,13 @@ export const api = {
   statements: (id: string) => call<Statement[]>("GET", `/api/sources/${id}/statements`),
   importStatement: (id: string, name: string, content: string) => call<ImportResult>("POST", `/api/sources/${id}/import`, { name, content }),
   holdings: (id: string) => call<{ holdings: HoldingLine[]; balancesAt: string }>("GET", `/api/sources/${id}/holdings`),
+  adjustments: (id: string) => call<Adjustment[]>("GET", `/api/sources/${id}/adjustments`),
+  reclassify: (id: string, aid: string, r: Reclassify) => call<Activity>("POST", `/api/sources/${id}/adjustments/${aid}`, r),
+  deleteManual: (id: string, aid: string) => call("DELETE", `/api/sources/${id}/activities/${aid}`, {}),
+  transfers: () => call<Transfers>("GET", "/api/transfers"),
+  putTransfer: (outId: string, inId: string, kind: "pair" | "refuse" | "") => call("PUT", "/api/transfers", { outId, inId, kind }),
+  settings: () => call<AppSettings>("GET", "/api/settings"),
+  putSettings: (s: { currency: string }) => call<AppSettings>("PUT", "/api/settings", s),
   destinations: () => call<{ destinations: Destination[]; routes: Route[] }>("GET", "/api/destinations"),
   createDestination: (in_: EntityInput) => call<Destination>("POST", "/api/destinations", in_),
   updateDestination: (id: string, in_: EntityInput) => call<Destination>("PUT", `/api/destinations/${id}`, in_),
