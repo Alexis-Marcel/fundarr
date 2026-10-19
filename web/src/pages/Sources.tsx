@@ -121,12 +121,12 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
               <KindBadge kind={a.id} size={44} />
               <span>
                 <strong>{a.id === "other" ? "Another wallet" : a.name}</strong>
-                <small>{a.id === "other" ? "any app or device" : a.kind === "hardware" ? "hardware wallet" : "wallet app"}</small>
+                <small>{a.id === "other" ? "any" : a.kind === "hardware" ? "hardware" : "app"}</small>
               </span>
             </button>
           ))}
           <p className="muted small picker-note">
-            The choice only picks the guide: any wallet can hold accounts of every blockchain Fundarr reads.{" "}
+            Only changes the guide.{" "}
             <button className="link small" onClick={() => setDef(null)}>
               Back
             </button>
@@ -144,7 +144,7 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
             </button>
           ))}
           <p className="muted small picker-note">
-            More connectors are on the way, starting with Trade Republic. Each one is a small Go package; see CONTRIBUTING.md.
+            More coming: Trade Republic, Kraken, Coinbase…
           </p>
         </div>
       ) : (

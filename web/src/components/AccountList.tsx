@@ -143,7 +143,7 @@ export function AccountList(p: Props) {
           value={draft}
           autoComplete="off"
           spellCheck={false}
-          placeholder={items.length ? "Paste another key or address" : "Paste a key or address"}
+          placeholder="Paste a key or address"
           aria-label={`Add to ${p.label}`}
           onChange={(e) => {
             setDraft(e.target.value);
@@ -172,7 +172,7 @@ function Found({ look, others, onReadAs }: { look?: Look; others?: Choice[]; onR
   if (look.state === "done" && look.balances.length === 0 && others && others.length > 0) {
     return (
       <span className="found found-warn">
-        Empty right now. Another chain's account? Read it as{" "}
+        Empty. Read it as{" "}
         {others.map((c, k) => (
           <span key={c.value}>
             {k > 0 && (k === others.length - 1 ? " or " : ", ")}
@@ -188,7 +188,7 @@ function Found({ look, others, onReadAs }: { look?: Look; others?: Choice[]; onR
     return <span className="found found-error">{look.message.charAt(0).toUpperCase() + look.message.slice(1)}</span>;
   }
   if (look.balances.length === 0) {
-    return <span className="found found-warn">Empty right now. Is it the right account?</span>;
+    return <span className="found found-warn">Empty. Right account?</span>;
   }
   // One amount per asset, networks summed.
   const by = new Map<string, { b: Balance; q: number }>();
