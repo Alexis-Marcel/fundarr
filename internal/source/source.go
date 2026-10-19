@@ -20,6 +20,9 @@ type Field struct {
 	Secret   bool   `json:"secret,omitempty"`   // stored encrypted, never sent back to the UI
 	Optional bool   `json:"optional,omitempty"` //
 	Help     string `json:"help,omitempty"`
+	// Lines: one value per line (a list). A secret list comes back to the
+	// UI masked line by line; masked lines sent back keep their stored value.
+	Lines bool `json:"lines,omitempty"`
 }
 
 // Definition describes a kind of source.
@@ -37,6 +40,9 @@ type Definition struct {
 	// Limits says what the platform's API cannot tell, shown where balance
 	// corrections are, so the user knows why they exist.
 	Limits string `json:"limits,omitempty"`
+	// Hidden: kept for sources already set up, not offered for new ones
+	// (another kind covers it).
+	Hidden bool `json:"hidden,omitempty"`
 	// New builds a connector from its settings (secrets decrypted).
 	New func(cfg Config) (Source, error) `json:"-"`
 }

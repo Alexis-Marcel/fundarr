@@ -181,6 +181,8 @@ type sourceView struct {
 	BalancesAt time.Time   `json:"balancesAt"`
 	Gaps       []model.Gap `json:"gaps"`
 	SecretSet  []string    `json:"secretsSet"` // which secret fields have a value
+	// SecretLines: secret lists, masked line by line (see maskLines).
+	SecretLines map[string]string `json:"secretLines,omitempty"`
 	// Corrections: balance corrections in the history; Adjust: whether
 	// Fundarr makes them for this source.
 	Corrections int  `json:"corrections"`
@@ -207,8 +209,61 @@ func (s *Server) viewSource(ctx context.Context, e *store.Entity) sourceView {
 				v.SecretSet = append(v.SecretSet, k)
 			}
 		}
+		if d, err := source.Get(e.Kind); err == nil {
+			for _, f := range d.Fields {
+				if f.Secret && f.Lines && sec[f.Name] != "" {
+					if v.SecretLines == nil {
+						v.SecretLines = map[string]string{}
+					}
+					v.SecretLines[f.Name] = maskLines(sec[f.Name])
+				}
+			}
+		}
 	}
 	return v
+}
+
+// mask hides the middle of a secret line; the ellipsis never occurs in a
+// real key, so a masked line sent back is recognized.
+func mask(l string) string {
+	if len(l) < 20 {
+		return l[:min(2, len(l))] + "…"
+	}
+	return l[:8] + "…" + l[len(l)-6:]
+}
+
+func maskLines(v string) string {
+	var out []string
+	for _, l := range strings.Split(v, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, mask(l))
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// unmaskLines puts back the stored value of every masked line, so a list can
+// be edited (lines added, removed) without typing the kept ones again.
+func unmaskLines(v, old string) (string, error) {
+	orig := map[string]string{}
+	for _, l := range strings.Split(old, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			orig[mask(l)] = l
+		}
+	}
+	var out []string
+	for _, l := range strings.Split(v, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.Contains(l, "…") {
+			o, ok := orig[l]
+			if !ok {
+				return "", errors.New("a hidden line was changed: delete it and paste the full value instead")
+			}
+			l = o
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n"), nil
 }
 
 func (s *Server) listSources(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +299,11 @@ func split(fields []source.Field, values map[string]string, old map[string]strin
 		if f.Secret {
 			if v == "" {
 				v = old[f.Name]
+			} else if f.Lines {
+				var err error
+				if v, err = unmaskLines(v, old[f.Name]); err != nil {
+					return nil, nil, errors.New(f.Label + ": " + err.Error())
+				}
 			}
 			if v != "" {
 				secrets[f.Name] = v

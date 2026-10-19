@@ -162,7 +162,8 @@ a {
   color: var(--muted);
 }
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: var(--text);
   background: var(--ink);
@@ -172,7 +173,8 @@ select {
   min-width: 0;
 }
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--brass);
   outline: none;
 }
@@ -182,6 +184,13 @@ select:disabled {
 }
 input[type="date"] {
   color-scheme: dark;
+}
+textarea {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
 }
 .check {
   display: flex;

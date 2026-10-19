@@ -29,6 +29,7 @@ import (
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/bitcoin"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/evm"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/okx"
+	_ "github.com/Alexis-Marcel/fundarr/internal/source/wallet"
 )
 
 var version = "dev"

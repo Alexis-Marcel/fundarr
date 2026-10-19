@@ -110,7 +110,7 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
     <Modal title={def ? `Add ${def.name}` : "Add a source"} onClose={onClose} wide={!def}>
       {!def ? (
         <div className="picker">
-          {defs.map((d) => (
+          {defs.filter((d) => !d.hidden).map((d) => (
             <button key={d.kind} className="pick" onClick={() => setDef(d)}>
               <KindBadge kind={d.kind} size={44} />
               <span>

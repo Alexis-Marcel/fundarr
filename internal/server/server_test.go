@@ -453,3 +453,20 @@ func TestAuthConfigErrors(t *testing.T) {
 		t.Fatal("allowlist")
 	}
 }
+
+func TestSecretListsEditMasked(t *testing.T) {
+	old := "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNf\n0x52908400098527886E0F7030069857D2E4169EE7"
+	m := maskLines(old)
+	if strings.Contains(m, "Vz398") || strings.Count(m, "…") != 2 {
+		t.Fatalf("masked %q", m)
+	}
+	lines := strings.Split(m, "\n")
+	// Keep the second, drop the first, add one.
+	got, err := unmaskLines(lines[1]+"\n0xabc", old)
+	if err != nil || got != "0x52908400098527886E0F7030069857D2E4169EE7\n0xabc" {
+		t.Errorf("unmask %q %v", got, err)
+	}
+	if _, err := unmaskLines("zpub6rFR…XXXXXX", old); err == nil {
+		t.Error("an edited masked line must be refused")
+	}
+}

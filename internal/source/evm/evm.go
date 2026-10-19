@@ -46,16 +46,27 @@ type Chain struct {
 	Host    string // Blockscout host
 	Native  string // native coin symbol
 	Decimal int32
+	// API, when set, replaces Blockscout: another Etherscan-compatible
+	// explorer for networks Blockscout does not index.
+	API string
 }
 
 var chains = map[string]Chain{
-	"ethereum": {"ethereum", 1, "eth.blockscout.com", "ETH", 18},
-	"arbitrum": {"arbitrum", 42161, "arbitrum.blockscout.com", "ETH", 18},
-	"base":     {"base", 8453, "base.blockscout.com", "ETH", 18},
-	"optimism": {"optimism", 10, "optimism.blockscout.com", "ETH", 18},
-	"polygon":  {"polygon", 137, "polygon.blockscout.com", "POL", 18},
-	"gnosis":   {"gnosis", 100, "gnosis.blockscout.com", "XDAI", 18},
+	"ethereum": {"ethereum", 1, "eth.blockscout.com", "ETH", 18, ""},
+	"arbitrum": {"arbitrum", 42161, "arbitrum.blockscout.com", "ETH", 18, ""},
+	"base":     {"base", 8453, "base.blockscout.com", "ETH", 18, ""},
+	"optimism": {"optimism", 10, "optimism.blockscout.com", "ETH", 18, ""},
+	"polygon":  {"polygon", 137, "polygon.blockscout.com", "POL", 18, ""},
+	"gnosis":   {"gnosis", 100, "gnosis.blockscout.com", "XDAI", 18, ""},
+	"avalanche": {"avalanche", 43114, "", "AVAX", 18,
+		"https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api"},
 }
+
+// All is the "chains" value that reads every supported network.
+const All = "all"
+
+// Networks lists the supported networks by name.
+func Networks() []string { return chainNames() }
 
 func chainNames() []string {
 	var n []string
@@ -71,11 +82,12 @@ func init() {
 		Kind:        "evm",
 		Name:        "Ethereum & EVM wallet",
 		Category:    "wallet",
+		Hidden:      true, // the Wallet source covers it
 		Description: "ETH and tokens on Ethereum and compatible networks from a public address (Ledger, MetaMask…): read-only.",
 		Fields: []source.Field{
 			{Name: "address", Label: "Address", Help: "0x… public address"},
 			{Name: "chains", Label: "Networks", Optional: true,
-				Help: "comma-separated; default ethereum. Available: " + strings.Join(chainNames(), ", ")},
+				Help: "comma-separated, or all; default ethereum. Available: " + strings.Join(chainNames(), ", ")},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true,
 				Help: "optional: uses Etherscan v2 instead of Blockscout (free key at etherscan.io)"},
 		},
@@ -97,6 +109,9 @@ func New(cfg source.Config) (source.Source, error) {
 	raw := cfg.Get("chains")
 	if strings.TrimSpace(raw) == "" {
 		raw = "ethereum"
+	}
+	if strings.EqualFold(strings.TrimSpace(raw), All) {
+		raw = strings.Join(chainNames(), ",")
 	}
 	for _, n := range strings.Split(raw, ",") {
 		n = strings.ToLower(strings.TrimSpace(n))
@@ -285,7 +300,9 @@ func isRateLimit(m string) bool {
 // get calls module=account&action=… for a chain and decodes result into out.
 func (c *client) get(ctx context.Context, ch Chain, q url.Values, out any) error {
 	base := c.blockscout(ch)
-	if c.key != "" {
+	// The key is for Etherscan, whose free tier does not cover the networks
+	// read from another explorer.
+	if c.key != "" && ch.API == "" {
 		base = c.etherscan
 		q.Set("chainid", strconv.Itoa(ch.ID))
 		q.Set("apikey", c.key)
@@ -460,6 +477,7 @@ var canonical = map[string]map[string]string{
 		"WBTC": "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6"},
 	"gnosis": {"USDC": "0xddafbb505ad214d7b80b1f830fccc89b60fb7a83", "USDT": "0x4ecaba5870353805a9f068101a40e0f32ed605c6",
 		"WETH": "0x6a023ccd1ff6f2045c3309768ead9e68f978f6e1"},
+	"avalanche": {"USDC": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e", "USDT": "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7"},
 }
 
 var protected = map[string]bool{"USDC": true, "USDT": true, "DAI": true, "WETH": true, "WBTC": true, "ETH": true}
