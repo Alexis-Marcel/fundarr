@@ -87,6 +87,15 @@ CREATE TABLE IF NOT EXISTS runs (
 	log        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS runs_subject ON runs(subject_id, id);
+CREATE TABLE IF NOT EXISTS statements (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+	name       TEXT NOT NULL,
+	from_ms    INTEGER NOT NULL,
+	to_ms      INTEGER NOT NULL,
+	activities INTEGER NOT NULL,
+	at         INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -458,6 +467,67 @@ func (s *Store) Balances(ctx context.Context, sourceID string) ([]model.Balance,
 	var b []model.Balance
 	err = json.Unmarshal([]byte(data), &b)
 	return b, time.UnixMilli(at).UTC(), err
+}
+
+// ---- statements
+
+// Statement is an imported platform statement: the reference for its period.
+type Statement struct {
+	ID         int64     `json:"id"`
+	SourceID   string    `json:"sourceId"`
+	Name       string    `json:"name"`
+	From       time.Time `json:"from"`
+	To         time.Time `json:"to"`
+	Activities int       `json:"activities"`
+	At         time.Time `json:"at"`
+}
+
+// ReplacePeriod swaps a source's history between from and to (inclusive)
+// for acts, and records the statement, in one transaction.
+func (s *Store) ReplacePeriod(ctx context.Context, st Statement, acts []model.Activity) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM activities WHERE source_id = ? AND time BETWEEN ? AND ?`, st.SourceID, ms(st.From), ms(st.To)); err != nil {
+		return err
+	}
+	now := ms(time.Now())
+	for _, a := range acts {
+		data, err := json.Marshal(a)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO activities (id, source_id, native_id, time, type, data, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, a.ID, a.SourceID, a.NativeID, ms(a.Time), string(a.Type), string(data), now); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO statements (source_id, name, from_ms, to_ms, activities, at) VALUES (?, ?, ?, ?, ?, ?)`,
+		st.SourceID, st.Name, ms(st.From), ms(st.To), len(acts), now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) Statements(ctx context.Context, sourceID string) ([]Statement, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, name, from_ms, to_ms, activities, at FROM statements WHERE source_id = ? ORDER BY id DESC`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Statement
+	for rows.Next() {
+		var st Statement
+		var from, to, at int64
+		if err := rows.Scan(&st.ID, &st.SourceID, &st.Name, &from, &to, &st.Activities, &at); err != nil {
+			return nil, err
+		}
+		st.From, st.To, st.At = time.UnixMilli(from).UTC(), time.UnixMilli(to).UTC(), time.UnixMilli(at).UTC()
+		out = append(out, st)
+	}
+	return out, rows.Err()
 }
 
 // ---- deliveries

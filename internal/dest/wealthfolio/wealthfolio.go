@@ -100,21 +100,13 @@ func num(d decimal.Decimal) *float64 {
 	return &f
 }
 
-var usdStables = map[string]bool{"USDT": true, "USDC": true, "FDUSD": true, "BUSD": true, "TUSD": true, "USDP": true, "DAI": true, "PYUSD": true, "USDE": true, "USD1": true, "USDS": true}
-var eurStables = map[string]bool{"EURC": true, "EURI": true, "EUROC": true, "EURT": true, "EURQ": true}
-
 // cash returns the currency an asset counts as cash in, or "" if it is not cash.
 func (w *Wealthfolio) cash(a model.Asset) string {
 	if a.Kind == model.Fiat {
 		return a.Symbol
 	}
-	if w.stableCash && a.Kind == model.Crypto {
-		if usdStables[a.Symbol] {
-			return "USD"
-		}
-		if eurStables[a.Symbol] {
-			return "EUR"
-		}
+	if w.stableCash {
+		return model.PeggedTo(a)
 	}
 	return ""
 }

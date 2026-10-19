@@ -62,6 +62,7 @@ func init() {
 			{Name: "api_secret", Label: "API secret", Secret: true},
 			{Name: "base_url", Label: "API URL", Optional: true, Help: "leave empty; for tests"},
 		},
+		Statement: statementHelp,
 		Setup: "In Binance, open Account → API Management and create a system-generated API key. " +
 			"Leave ONLY \"Enable Reading\" checked: no spot/margin trading, no withdrawals, no transfers. " +
 			"Restrict it to your server's IP address if you can. Fundarr refuses keys that can trade or withdraw.",

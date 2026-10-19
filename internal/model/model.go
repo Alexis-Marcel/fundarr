@@ -146,3 +146,21 @@ func (a Activity) Price() decimal.Decimal {
 	}
 	return a.Quote.Qty.Div(a.Base.Qty)
 }
+
+// Stablecoins pegged to a fiat currency, by symbol.
+var stables = map[string]string{
+	"USDT": "USD", "USDC": "USD", "FDUSD": "USD", "BUSD": "USD", "TUSD": "USD", "USDP": "USD", "PAX": "USD",
+	"DAI": "USD", "PYUSD": "USD", "USDE": "USD", "USD1": "USD", "USDS": "USD",
+	"EURC": "EUR", "EURI": "EUR", "EUROC": "EUR", "EURT": "EUR", "EURQ": "EUR",
+}
+
+// PeggedTo returns the fiat currency a stablecoin follows ("" otherwise).
+func PeggedTo(a Asset) string {
+	if a.Kind != Crypto {
+		return ""
+	}
+	return stables[a.Symbol]
+}
+
+// CashLike is true for fiat money and stablecoins: what assets are priced in.
+func CashLike(a Asset) bool { return a.Kind == Fiat || PeggedTo(a) != "" }

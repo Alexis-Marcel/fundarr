@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -77,7 +79,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /auth/login", s.auth.handleOIDCStart)
 	m.HandleFunc("GET /auth/callback", s.auth.handleOIDCCallback)
 
-	api := func(pattern string, h http.HandlerFunc) { m.HandleFunc(pattern, s.protect(h)) }
+	api := func(pattern string, h http.HandlerFunc) { m.HandleFunc(pattern, s.protect(h, 1<<20)) }
+	m.HandleFunc("POST /api/sources/{id}/import", s.protect(s.importStatement, 64<<20))
 	api("POST /api/password", s.auth.handleChangePassword)
 	api("GET /api/definitions", s.definitions)
 	api("GET /api/sources", s.listSources)
@@ -88,6 +91,7 @@ func (s *Server) routes() {
 	api("POST /api/sources/{id}/sync", s.syncSource)
 	api("GET /api/sources/{id}/activities", s.sourceActivities)
 	api("GET /api/sources/{id}/holdings", s.sourceHoldings)
+	api("GET /api/sources/{id}/statements", s.statements)
 	api("GET /api/destinations", s.listDestinations)
 	api("POST /api/destinations", s.createDestination)
 	api("PUT /api/destinations/{id}", s.updateDestination)
@@ -103,7 +107,7 @@ func (s *Server) routes() {
 
 // protect requires a session and, for writes, a JSON body (a cross-site form
 // cannot send one without a CORS preflight, which Fundarr never allows).
-func (s *Server) protect(h http.HandlerFunc) http.HandlerFunc {
+func (s *Server) protect(h http.HandlerFunc, maxBody int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.auth.user(r) == "" {
 			writeErr(w, http.StatusUnauthorized, "sign in first")
@@ -121,7 +125,7 @@ func (s *Server) protect(h http.HandlerFunc) http.HandlerFunc {
 				}
 			}
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		h(w, r)
 	}
 }
@@ -470,6 +474,48 @@ func (s *Server) sourceHoldings(w http.ResponseWriter, r *http.Request) {
 		add(k, a.Asset)
 	}
 	writeJSON(w, map[string]any{"holdings": out, "balancesAt": at})
+}
+
+// importStatement takes a statement exported from the platform (base64).
+func (s *Server) importStatement(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, "the file is too large or not sent as JSON")
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(in.Content)
+	if err != nil || len(data) == 0 {
+		writeErr(w, 400, "the file content is missing")
+		return
+	}
+	res, err := s.eng.Import(r.Context(), r.PathValue("id"), filepath.Base(in.Name), data)
+	switch {
+	case errors.Is(err, engine.ErrBusy):
+		writeErr(w, 409, "a sync is running; import when it is done")
+		return
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, 404, "no such source")
+		return
+	case err != nil:
+		writeErr(w, 422, err.Error())
+		return
+	}
+	writeJSON(w, res)
+}
+
+func (s *Server) statements(w http.ResponseWriter, r *http.Request) {
+	list, err := s.st.Statements(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if list == nil {
+		list = []store.Statement{}
+	}
+	writeJSON(w, list)
 }
 
 // ---- destinations

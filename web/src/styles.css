@@ -867,3 +867,28 @@ input[type="date"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ---- statements */
+
+.statements {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--brass);
+  border-radius: var(--r-s);
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.88rem;
+}
+.statements li {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.notes {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.2rem;
+}

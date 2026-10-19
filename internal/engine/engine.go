@@ -221,6 +221,20 @@ func (e *Engine) sync(ctx context.Context, ent *store.Entity, log *runLog) (*Syn
 	if err != nil {
 		return nil, nil, err
 	}
+	// Imported statements are the reference for their period.
+	stmts, err := e.Store.Statements(ctx, ent.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	covered := func(t time.Time) bool {
+		for _, s := range stmts {
+			if !t.Before(s.From) && !t.After(s.To) {
+				return true
+			}
+		}
+		return false
+	}
+	skipped := 0
 	res := &SyncResult{}
 	var batch []model.Activity
 	flush := func() error {
@@ -242,6 +256,10 @@ func (e *Engine) sync(ctx context.Context, ent *store.Entity, log *runLog) (*Syn
 			a.SourceID = ent.ID
 			a.ID = model.ActivityID(ent.ID, a.NativeID)
 			a.Time = a.Time.UTC()
+			if covered(a.Time) {
+				skipped++
+				return nil
+			}
 			res.Fetched++
 			batch = append(batch, a)
 			if len(batch) >= 500 {
@@ -263,6 +281,9 @@ func (e *Engine) sync(ctx context.Context, ent *store.Entity, log *runLog) (*Syn
 		return res, nil, err
 	}
 	log.add("%d activities fetched, %d new", res.Fetched, res.New)
+	if skipped > 0 {
+		log.add("%d activities inside an imported statement's period left to the statement", skipped)
+	}
 	bal, err := src.Balances(ctx)
 	if err != nil {
 		return res, nil, fmt.Errorf("balances: %w", err)
@@ -297,6 +318,81 @@ func (e *Engine) Reconcile(ctx context.Context, sourceID string) ([]model.Gap, e
 // Tolerance is the relative difference ignored when reconciling (rounding
 // of displayed balances).
 func (e *Engine) Tolerance() decimal.Decimal { return decimal.New(1, -6) }
+
+// ImportResult summarizes a statement import.
+type ImportResult struct {
+	From       time.Time   `json:"from"`
+	To         time.Time   `json:"to"`
+	Activities int         `json:"activities"`
+	Replaced   int         `json:"replaced"`
+	Notes      []string    `json:"notes"`
+	Gaps       []model.Gap `json:"gaps"`
+}
+
+var ErrNoImport = errors.New("this source cannot import statements")
+
+// Import reads a statement exported from the platform and makes it the
+// history of the period it covers.
+func (e *Engine) Import(ctx context.Context, id, name string, data []byte) (*ImportResult, error) {
+	if !e.lock(id) {
+		return nil, ErrBusy
+	}
+	defer e.unlock(id)
+	ent, err := e.Store.Source(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	src, err := e.Build(ent)
+	if err != nil {
+		return nil, err
+	}
+	imp, ok := src.(source.Importer)
+	if !ok {
+		return nil, ErrNoImport
+	}
+	existing, err := e.Store.Activities(ctx, store.ActivityFilter{SourceID: id})
+	if err != nil {
+		return nil, err
+	}
+	st, err := imp.Import(name, data, existing)
+	if err != nil {
+		return nil, err
+	}
+	if len(st.Activities) == 0 || st.To.Before(st.From) {
+		return nil, errors.New("the file holds no activity")
+	}
+	replaced := 0
+	for _, a := range existing {
+		if !a.Time.Before(st.From) && !a.Time.After(st.To) {
+			replaced++
+		}
+	}
+	acts := make([]model.Activity, 0, len(st.Activities))
+	for _, a := range st.Activities {
+		if a.NativeID == "" || a.Time.IsZero() || a.Type == "" {
+			return nil, fmt.Errorf("importer produced an incomplete activity: %+v", a)
+		}
+		a.SourceID = id
+		a.ID = model.ActivityID(id, a.NativeID)
+		a.Time = a.Time.UTC()
+		acts = append(acts, a)
+	}
+	runID, _ := e.Store.StartRun(ctx, "import", id)
+	err = e.Store.ReplacePeriod(ctx, store.Statement{SourceID: id, Name: name, From: st.From.UTC(), To: st.To.UTC()}, acts)
+	summary := fmt.Sprintf("%s: %d activities from %s to %s (replacing %d)", name, len(acts), st.From.Format("2006-01-02"), st.To.Format("2006-01-02"), replaced)
+	if err != nil {
+		summary += "; " + err.Error()
+	}
+	_ = e.Store.EndRun(ctx, runID, err == nil, summary, strings.Join(st.Notes, "\n"))
+	if err != nil {
+		return nil, err
+	}
+	gaps, err := e.Reconcile(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &ImportResult{From: st.From, To: st.To, Activities: len(acts), Replaced: replaced, Notes: st.Notes, Gaps: gaps}, nil
+}
 
 // Test checks a source's credentials without syncing.
 func (e *Engine) Test(ctx context.Context, ent *store.Entity) error {

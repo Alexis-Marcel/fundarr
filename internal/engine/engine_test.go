@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -264,5 +266,59 @@ func TestResyncStartsFromScratch(t *testing.T) {
 	}
 	if n, _ := e.Store.CountActivities(ctx, "s"); n != 1 {
 		t.Fatal("no duplicates")
+	}
+}
+
+// fakeSrc imports a "statement": one line per activity, "native qty".
+func (f *fakeSrc) Import(name string, data []byte, existing []model.Activity) (*source.Statement, error) {
+	t0 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	st := &source.Statement{From: t0, To: t0.Add(2 * time.Hour), Notes: []string{"read " + name}}
+	for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var id, qty string
+		fmt.Sscan(line, &id, &qty)
+		st.Activities = append(st.Activities, dep("statement:"+id, qty, t0.Add(time.Duration(i)*time.Hour)))
+	}
+	return st, nil
+}
+
+func TestImportStatement(t *testing.T) {
+	e, ctx := setup(t)
+	sealed, _ := e.Seal(map[string]string{"secret": "s3cret"})
+	_ = e.Store.PutSource(ctx, &store.Entity{ID: "s", Kind: "fake", Name: "Fake", Secrets: sealed, Enabled: true})
+	t0 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	// The API knows one activity inside the statement's period and one after.
+	fakeActs = []model.Activity{dep("api-in", "5", t0.Add(30*time.Minute)), dep("api-after", "1", t0.Add(48*time.Hour))}
+	fakeBal = []model.Balance{{Amount: model.Amt(model.CryptoOrFiat("BTC"), "4")}}
+	if _, err := e.Sync(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.Import(ctx, "s", "stmt.csv", []byte("a 1\nb 2\n"))
+	if err != nil || res.Activities != 2 || res.Replaced != 1 || len(res.Gaps) != 0 {
+		t.Fatalf("import %+v %v", res, err)
+	}
+	acts, _ := e.Store.Activities(ctx, store.ActivityFilter{SourceID: "s"})
+	if len(acts) != 3 || acts[0].NativeID != "statement:a" || acts[2].NativeID != "api-after" {
+		t.Fatalf("history %+v", acts)
+	}
+	// A later full sync leaves the period to the statement.
+	if _, err := e.Resync(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := e.Store.CountActivities(ctx, "s"); n != 3 {
+		t.Fatalf("api activity came back inside the statement period: %d", n)
+	}
+	sts, _ := e.Store.Statements(ctx, "s")
+	if len(sts) != 1 || sts[0].Activities != 2 || sts[0].Name != "stmt.csv" {
+		t.Fatalf("statements %+v", sts)
+	}
+	runs, _ := e.Store.Runs(ctx, "s", 10)
+	found := false
+	for _, r := range runs {
+		if r.Kind == "import" && r.Log == "read stmt.csv" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("import run %+v", runs)
 	}
 }
