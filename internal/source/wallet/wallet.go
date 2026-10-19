@@ -18,7 +18,9 @@ import (
 	"github.com/Alexis-Marcel/fundarr/internal/source/bitcoin"
 	"github.com/Alexis-Marcel/fundarr/internal/source/cardano"
 	"github.com/Alexis-Marcel/fundarr/internal/source/evm"
+	"github.com/Alexis-Marcel/fundarr/internal/source/solana"
 	"github.com/Alexis-Marcel/fundarr/internal/source/tron"
+	"github.com/Alexis-Marcel/fundarr/internal/source/xrp"
 )
 
 func init() {
@@ -26,15 +28,19 @@ func init() {
 		Kind:        "wallet",
 		Name:        "Wallet (Ledger, Trezor…)",
 		Category:    "wallet",
-		Description: "Every account of a hardware or software wallet in one source: Bitcoin, Ethereum and EVM networks, Litecoin, Dogecoin, Bitcoin Cash. Read-only.",
+		Description: "Every account of a hardware or software wallet in one source: Bitcoin, Ethereum and EVM networks, Solana, XRP, Cardano, Tron, Litecoin, Dogecoin, Bitcoin Cash. Read-only.",
 		Fields: []source.Field{
 			{Name: "accounts", Label: "Accounts", Secret: true, Lines: true,
 				Help: "Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: the account's extended public key. In Ledger Live, open the account, then ⋯, Edit account, Advanced.\n" +
 					"Ethereum: the account's 0x… address. Fundarr reads it on every network it supports: Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis, Avalanche.\n" +
 					"Tron: the account's T… address (TRX and tokens such as USDT).\n" +
-					"Cardano: a receive address of the account (addr1…), or its stake address (stake1…); staking rewards included."},
+					"Cardano: a receive address of the account (addr1…), or its stake address (stake1…); staking rewards included.\n" +
+					"XRP: the account's r… address.\n" +
+					"Solana: the account's address (SOL and well-known tokens)."},
 			{Name: "esplora_url", Label: "Bitcoin server", Optional: true, Advanced: true,
 				Help: "Your own mempool or electrs, for privacy. By default: mempool.space, then blockstream.info."},
+			{Name: "solana_rpc", Label: "Solana RPC", Secret: true, Optional: true, Advanced: true,
+				Help: "A private RPC URL (Helius, QuickNode…) reads a large Solana history much faster than the public one."},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true, Advanced: true,
 				Help: "Adds BNB Chain, which no free explorer covers, with an Etherscan plan that includes it."},
 		},
@@ -106,6 +112,13 @@ var chains = []chain{
 		}},
 	{kind: "tron", name: "Tron", label: "tron", match: tron.Valid, build: address(tron.New)},
 	{kind: "cardano", name: "Cardano", label: "cardano", match: cardano.Valid, build: address(cardano.New)},
+	{kind: "xrp", name: "XRP", label: "xrp", match: xrp.Valid, build: address(xrp.New)},
+	// Last: any 32 bytes in base58 look like a Solana address.
+	{kind: "solana", name: "Solana", match: solana.Valid,
+		build: func(line string, cfg source.Config) (source.Source, error) {
+			return solana.New(source.Config{HTTP: cfg.HTTP, State: cfg.State,
+				Values: map[string]string{"address": line, "base_url": cfg.Get("solana_rpc")}})
+		}},
 }
 
 // address builds an account read from one address, by the chain's package.
@@ -124,6 +137,8 @@ var prefixes = map[string]string{
 	"eth": "evm", "evm": "evm",
 	"trx": "tron", "tron": "tron",
 	"ada": "cardano", "cardano": "cardano",
+	"xrp": "xrp",
+	"sol": "solana", "solana": "solana",
 }
 
 // detect tells which chain a line belongs to, and the key without prefix.
@@ -150,7 +165,7 @@ func detect(line string) (*chain, string, error) {
 }
 
 // short prefixes, by chain kind, used to store a chain picked by the user.
-var short = map[string]string{"bitcoin": "btc", "litecoin": "ltc", "dogecoin": "doge", "bitcoincash": "bch", "evm": "evm", "tron": "tron", "cardano": "cardano"}
+var short = map[string]string{"bitcoin": "btc", "litecoin": "ltc", "dogecoin": "doge", "bitcoincash": "bch", "evm": "evm", "tron": "tron", "cardano": "cardano", "xrp": "xrp", "solana": "solana"}
 
 // Detect recognizes one account and checks it can be read.
 func Detect(line string) (source.Detected, error) {
