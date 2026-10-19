@@ -14,10 +14,13 @@ import (
 // client talks to an Esplora REST API (mempool.space, blockstream.info,
 // a self-hosted electrs).
 type client struct {
-	base  string
-	http  *http.Client
-	pause time.Duration
-	sleep func(context.Context, time.Duration) error
+	base string
+	// fallback: other public servers tried in turn when base stops
+	// answering (only with the default, never past a server the user chose).
+	fallback []string
+	http     *http.Client
+	pause    time.Duration
+	sleep    func(context.Context, time.Duration) error
 
 	mu   sync.Mutex
 	last time.Time
@@ -66,10 +69,28 @@ type tx struct {
 	} `json:"status"`
 }
 
-// get fetches path and decodes JSON, retrying on rate limits and server errors.
+// failover moves to the next public server, if any is left.
+func (c *client) failover() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.fallback) == 0 {
+		return false
+	}
+	c.base, c.fallback = c.fallback[0], c.fallback[1:]
+	return true
+}
+
+// get fetches path and decodes JSON, retrying on rate limits and server
+// errors, then on the next public server when this one stays unreachable.
 func (c *client) get(ctx context.Context, path string, out any) error {
 	backoff := 2 * time.Second
 	for attempt := 0; ; attempt++ {
+		// A server that cannot be reached twice in a row is likely down or
+		// blocked on this network: do not spend minutes on it.
+		limit := 5
+		if len(c.fallback) > 0 {
+			limit = 1
+		}
 		c.mu.Lock()
 		wait := c.pause - time.Since(c.last)
 		c.mu.Unlock()
@@ -92,21 +113,31 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 		if err != nil {
 			// Timeouts and dropped connections are common on public servers:
 			// retry them like a rate limit, unless the run was cancelled.
-			if ctx.Err() == nil && attempt < 5 {
+			if ctx.Err() == nil && attempt < limit {
 				if err := c.sleep(ctx, backoff); err != nil {
 					return err
 				}
 				backoff *= 2
 				continue
 			}
+			if ctx.Err() == nil && c.failover() {
+				attempt, backoff = -1, 2*time.Second
+				continue
+			}
 			return fmt.Errorf("esplora: %w", err)
 		}
-		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500) && attempt < 5 {
-			if err := c.sleep(ctx, backoff); err != nil {
-				return err
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			if attempt < 5 {
+				if err := c.sleep(ctx, backoff); err != nil {
+					return err
+				}
+				backoff *= 2
+				continue
 			}
-			backoff *= 2
-			continue
+			if c.failover() {
+				attempt, backoff = -1, 2*time.Second
+				continue
+			}
 		}
 		if resp.StatusCode != http.StatusOK {
 			msg := strings.TrimSpace(string(body))
