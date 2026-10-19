@@ -200,3 +200,25 @@ func TestDetectSingleAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestNicknames(t *testing.T) {
+	s, err := New(source.Config{Values: map[string]string{"accounts": zpub + "\tSavings\n" + addr + "\tMetaMask"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := s.(*Wallet)
+	if w.accounts[0].label != "Savings" || w.accounts[1].label != "MetaMask" {
+		t.Errorf("labels %q %q", w.accounts[0].label, w.accounts[1].label)
+	}
+	// The name does not change the account.
+	s2, _ := New(source.Config{Values: map[string]string{"accounts": zpub}})
+	if s2.(*Wallet).accounts[0].id != w.accounts[0].id {
+		t.Error("a name must not change the id")
+	}
+	if d, err := Detect(zpub + "\tSavings"); err != nil || d.Kind != "bitcoin" || d.Value != zpub {
+		t.Errorf("detect with name %+v %v", d, err)
+	}
+	if _, err := Preview(context.Background(), "nope", source.Config{}); err == nil {
+		t.Error("preview of junk")
+	}
+}

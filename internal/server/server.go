@@ -84,6 +84,7 @@ func (s *Server) routes() {
 	api("POST /api/password", s.auth.handleChangePassword)
 	api("GET /api/definitions", s.definitions)
 	api("POST /api/kinds/{kind}/detect", s.detect)
+	api("POST /api/kinds/{kind}/preview", s.preview)
 	api("GET /api/sources", s.listSources)
 	api("POST /api/sources", s.createSource)
 	api("POST /api/sources/test", s.testSource)
@@ -236,7 +237,9 @@ func mask(l string) string {
 
 // listItem is one saved value of a list, masked.
 type listItem struct {
-	Value string `json:"value"`
+	Value string `json:"value"`           // masked
+	Label string `json:"label,omitempty"` // the name the user gave it
+	Kind  string `json:"kind,omitempty"`
 	Chain string `json:"chain,omitempty"`
 }
 
@@ -246,10 +249,11 @@ func items(d source.Definition, v string) []listItem {
 		if l = strings.TrimSpace(l); l == "" {
 			continue
 		}
-		it := listItem{Value: mask(l)}
+		v, label := source.SplitLabel(l)
+		it := listItem{Value: mask(v), Label: label}
 		if d.Detect != nil {
-			if det, err := d.Detect(l); err == nil {
-				it.Chain = det.Chain
+			if det, err := d.Detect(v); err == nil {
+				it.Kind, it.Chain = det.Kind, det.Chain
 			}
 		}
 		out = append(out, it)
@@ -279,14 +283,89 @@ func (s *Server) detect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, det)
 }
 
+// preview says what one value of a list holds now. A saved (masked) value
+// is read from its source's stored secret.
+func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
+	d, err := source.Get(r.PathValue("kind"))
+	if err != nil || d.Preview == nil {
+		writeErr(w, 404, "this kind has no list to preview")
+		return
+	}
+	var in struct {
+		Value    string `json:"value"`
+		SourceID string `json:"sourceId"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	settings := map[string]string{}
+	val, _ := source.SplitLabel(in.Value)
+	if in.SourceID != "" {
+		e, err := s.st.Source(r.Context(), in.SourceID)
+		if err != nil || e.Kind != d.Kind {
+			writeErr(w, 404, "no such source")
+			return
+		}
+		sec, err := s.eng.Secrets(e)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		for k, v := range e.Settings {
+			settings[k] = v
+		}
+		for k, v := range sec {
+			settings[k] = v
+		}
+		if strings.Contains(val, "…") {
+			for _, f := range d.Fields {
+				if f.Lines {
+					if un, err := unmaskLines(val, sec[f.Name]); err == nil {
+						val = un
+						break
+					}
+				}
+			}
+		}
+	}
+	if strings.Contains(val, "…") {
+		writeErr(w, 422, "this saved account can only be checked from its source")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	bal, err := d.Preview(ctx, val, source.Config{Values: settings, HTTP: s.eng.HTTP})
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		writeErr(w, 422, "too long to read here; the sync reads it fully")
+		return
+	}
+	if err != nil {
+		writeErr(w, 422, err.Error())
+		return
+	}
+	if bal == nil {
+		bal = []model.Balance{}
+	}
+	writeJSON(w, map[string]any{"balances": bal})
+}
+
 func maskLines(v string) string {
 	var out []string
 	for _, l := range strings.Split(v, "\n") {
 		if l = strings.TrimSpace(l); l != "" {
-			out = append(out, mask(l))
+			val, label := source.SplitLabel(l)
+			out = append(out, withLabel(mask(val), label))
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+func withLabel(v, label string) string {
+	if label == "" {
+		return v
+	}
+	return v + "\t" + label
 }
 
 // unmaskLines puts back the stored value of every masked line, so a list can
@@ -295,20 +374,25 @@ func unmaskLines(v, old string) (string, error) {
 	orig := map[string]string{}
 	for _, l := range strings.Split(old, "\n") {
 		if l = strings.TrimSpace(l); l != "" {
-			orig[mask(l)] = l
+			val, _ := source.SplitLabel(l)
+			orig[mask(val)] = val
 		}
 	}
 	var out []string
 	for _, l := range strings.Split(v, "\n") {
-		l = strings.TrimSpace(l)
-		if strings.Contains(l, "…") {
-			o, ok := orig[l]
+		if l = strings.TrimSpace(l); l == "" {
+			continue
+		}
+		val, label := source.SplitLabel(l)
+		if strings.Contains(val, "…") {
+			o, ok := orig[val]
 			if !ok {
 				return "", errors.New("a hidden line was changed: delete it and paste the full value instead")
 			}
-			l = o
+			val = o
 		}
-		out = append(out, l)
+		// The name may change; the key stays what was saved.
+		out = append(out, withLabel(val, label))
 	}
 	return strings.Join(out, "\n"), nil
 }

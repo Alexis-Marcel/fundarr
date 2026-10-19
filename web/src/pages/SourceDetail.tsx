@@ -3,9 +3,11 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, type Activity, type Adjustment, type ImportResult, type Reclassify, type Source, type SourceDef } from "../api";
 import { KindBadge, StatusDot } from "../components/Badge";
 import { EntityForm } from "../components/EntityForm";
+import { WalletGuide } from "../components/WalletGuide";
+import { walletApp } from "../wallets";
 import { Modal } from "../components/Modal";
 import { RunList } from "./Activity";
-import { ago, assetLabel, dateTime, day, isZeroTime, money, qty, usePoll } from "../lib";
+import { ago, assetLabel, badgeKind, dateTime, day, isZeroTime, money, qty, usePoll } from "../lib";
 import { health, statusText } from "./Sources";
 
 type Tab = "check" | "activities" | "runs";
@@ -33,7 +35,7 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
   return (
     <section className="page">
       <header className="detail-head">
-        <KindBadge kind={src.kind} size={56} />
+        <KindBadge kind={badgeKind(src)} size={56} />
         <div className="detail-title">
           <h1>{src.name}</h1>
           <p className={`row-status status-${health(src)}`}>
@@ -139,6 +141,8 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
             setup={def.setup}
             initialName={src.name}
             kind={src.kind}
+            sourceId={src.id}
+            guide={src.kind === "wallet" ? <WalletGuide app={walletApp(src.settings?.app)} /> : undefined}
             settings={src.settings}
             secretsSet={src.secretsSet}
             secretItems={src.secretItems}

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import type { Field, ListItem } from "../api";
 import { AccountList } from "./AccountList";
 
@@ -12,6 +12,10 @@ interface Props {
   settings?: Record<string, string>;
   secretsSet?: string[] | null;
   secretItems?: Record<string, ListItem[]>;
+  /** The saved source, when editing one. */
+  sourceId?: string;
+  /** Shown with the list field: how to find what to paste. */
+  guide?: ReactNode;
   /** Checks the values against the service without saving. */
   onTest?: (name: string, values: Record<string, string>) => Promise<void>;
   onSave: (name: string, values: Record<string, string>) => Promise<void>;
@@ -50,8 +54,18 @@ export function EntityForm(p: Props) {
             key={f.name}
             kind={p.kind}
             label={f.label}
-            help={f.help}
             saved={p.secretItems?.[f.name]}
+            sourceId={p.sourceId}
+            guide={
+              p.guide ??
+              (f.help && (
+                <ul className="field-help">
+                  {f.help.split("\n").map((l) => (
+                    <li key={l}>{l}</li>
+                  ))}
+                </ul>
+              ))
+            }
             onChange={(v) => setValues((x) => ({ ...x, [f.name]: v }))}
           />
         ) : (
@@ -86,11 +100,11 @@ export function EntityForm(p: Props) {
         <span>Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
       </label>
-      {p.fields.filter((f) => !f.advanced).map(field)}
-      {p.fields.some((f) => f.advanced) && (
+      {p.fields.filter((f) => !f.advanced && !f.hidden).map(field)}
+      {p.fields.some((f) => f.advanced && !f.hidden) && (
         <details className="advanced">
           <summary>Advanced</summary>
-          {p.fields.filter((f) => f.advanced).map(field)}
+          {p.fields.filter((f) => f.advanced && !f.hidden).map(field)}
         </details>
       )}
       {p.extra}

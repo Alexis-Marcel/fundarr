@@ -30,10 +30,11 @@ func init() {
 		Category:    "wallet",
 		Description: "A hardware wallet (Ledger, Trezor…) or an app (MetaMask, Phantom, Trust Wallet, Exodus…), every account in one source: Bitcoin, Ethereum and EVM networks, Solana, XRP, Cardano, Tron, Litecoin, Dogecoin, Bitcoin Cash. Read-only.",
 		Fields: []source.Field{
+			{Name: "app", Label: "App", Optional: true, Hidden: true},
 			{Name: "accounts", Label: "Accounts", Secret: true, Lines: true,
 				Help: "Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: the account's extended public key (Ledger Live: open the account, then ⋯, Edit account, Advanced). " +
 					"A wallet app that shows a single Bitcoin address (Phantom…): that address.\n" +
-					"Ethereum: the account's 0x… address. Fundarr reads it on every network it supports: Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis, Avalanche.\n" +
+					"Ethereum: the account's 0x… address. Fundarr reads it on Ethereum, Optimism and Avalanche, and on Arbitrum, Base, Polygon and Gnosis with a free Blockscout key (Advanced).\n" +
 					"Tron: the account's T… address (TRX and tokens such as USDT).\n" +
 					"Cardano: a receive address of the account (addr1…), or its stake address (stake1…); staking rewards included.\n" +
 					"XRP: the account's r… address.\n" +
@@ -42,13 +43,16 @@ func init() {
 				Help: "Your own mempool or electrs, for privacy. By default: mempool.space, then blockstream.info."},
 			{Name: "solana_rpc", Label: "Solana RPC", Secret: true, Optional: true, Advanced: true,
 				Help: "A private RPC URL (Helius, QuickNode…) reads a large Solana history much faster than the public one."},
+			{Name: "blockscout_key", Label: "Blockscout API key", Secret: true, Optional: true, Advanced: true,
+				Help: "Free at dev.blockscout.com. Adds Arbitrum, Base, Polygon and Gnosis, whose explorers no longer answer without a key; without it, Ethereum, Optimism and Avalanche are read."},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true, Advanced: true,
 				Help: "Adds BNB Chain, which no free explorer covers, with an Etherscan plan that includes it."},
 		},
 		Setup: "Fundarr only reads public keys and addresses: it sees the history, it can never spend. Add each account of the wallet below; " +
 			"Fundarr recognizes its blockchain. Never type your recovery phrase into Fundarr or any website: it is never needed to read.",
-		New:    New,
-		Detect: Detect,
+		New:     New,
+		Detect:  Detect,
+		Preview: Preview,
 	})
 }
 
@@ -119,7 +123,8 @@ var chains = []chain{
 		norm: strings.ToLower,
 		build: func(line string, cfg source.Config) (source.Source, error) {
 			return evm.New(source.Config{HTTP: cfg.HTTP, State: cfg.State, Values: map[string]string{"address": line,
-				"chains": evm.All, "etherscan_key": cfg.Get("etherscan_key"), "base_url": cfg.Get("evm_base_url")}})
+				"chains": evm.All, "etherscan_key": cfg.Get("etherscan_key"), "blockscout_key": cfg.Get("blockscout_key"),
+				"base_url": cfg.Get("evm_base_url")}})
 		}},
 	{kind: "tron", name: "Tron", label: "tron", match: tron.Valid, build: address(tron.New)},
 	{kind: "cardano", name: "Cardano", label: "cardano", match: cardano.Valid, build: address(cardano.New)},
@@ -191,7 +196,7 @@ var short = map[string]string{"bitcoin": "btc", "litecoin": "ltc", "dogecoin": "
 
 // Detect recognizes one account and checks it can be read.
 func Detect(line string) (source.Detected, error) {
-	line = strings.TrimSpace(line)
+	line, _ = source.SplitLabel(line)
 	c, key, err := detect(line)
 	if err != nil {
 		return source.Detected{}, err
@@ -199,7 +204,7 @@ func Detect(line string) (source.Detected, error) {
 	if _, err := c.build(key, source.Config{Values: map[string]string{}}); err != nil {
 		return source.Detected{}, err
 	}
-	d := source.Detected{Chain: c.name, Value: line}
+	d := source.Detected{Kind: c.kind, Chain: c.name, Value: line}
 	// A plain xpub can be any of the Bitcoin-like chains.
 	if strings.HasPrefix(key, "xpub") {
 		for _, k := range []string{"bitcoin", "bitcoincash", "litecoin", "dogecoin"} {
@@ -212,12 +217,26 @@ func Detect(line string) (source.Detected, error) {
 					if k == "bitcoin" {
 						v = key
 					}
-					d.Choices = append(d.Choices, source.Choice{Chain: chains[j].name, Value: v})
+					d.Choices = append(d.Choices, source.Choice{Kind: k, Chain: chains[j].name, Value: v})
 				}
 			}
 		}
 	}
 	return d, nil
+}
+
+// Preview reads the balances of one account, as it is now.
+func Preview(ctx context.Context, line string, cfg source.Config) ([]model.Balance, error) {
+	line, _ = source.SplitLabel(line)
+	c, key, err := detect(line)
+	if err != nil {
+		return nil, err
+	}
+	s, err := c.build(key, source.Config{Values: cfg.Values, HTTP: cfg.HTTP})
+	if err != nil {
+		return nil, err
+	}
+	return s.Balances(ctx)
 }
 
 // Lines splits the accounts field: one per line, blank lines and # comments
@@ -245,13 +264,14 @@ func New(cfg source.Config) (source.Source, error) {
 		}
 	}
 	type parsed struct {
-		c        *chain
-		line, id string
+		c                  *chain
+		line, id, nickname string
 	}
 	var ps []parsed
 	count := map[string]int{}
 	seen := map[string]bool{}
 	for i, l := range lines {
+		l, nickname := source.SplitLabel(l)
 		c, key, err := detect(l)
 		if err != nil {
 			return nil, fmt.Errorf("account %d: %w", i+1, err)
@@ -265,12 +285,14 @@ func New(cfg source.Config) (source.Source, error) {
 		}
 		seen[c.kind+norm] = true
 		sum := sha256.Sum256([]byte(norm))
-		ps = append(ps, parsed{c, key, c.kind + "-" + hex.EncodeToString(sum[:4])})
+		ps = append(ps, parsed{c, key, c.kind + "-" + hex.EncodeToString(sum[:4]), nickname})
 		count[c.kind]++
 	}
 	for i, p := range ps {
 		label := p.c.label
-		if count[p.c.kind] > 1 {
+		if p.nickname != "" {
+			label = p.nickname
+		} else if count[p.c.kind] > 1 {
 			// Several accounts of a chain: the end of the key tells them apart.
 			tail := "…" + p.line[len(p.line)-4:]
 			if p.c.norm != nil {

@@ -79,6 +79,14 @@ export function monogram(kind: string) {
     traderepublic: ["TR", 0],
     bitcoin: ["₿", 32],
     evm: ["Ξ", 230],
+    wallet: ["W", 190],
+    other: ["W", 190],
+    ledger: ["L", 215],
+    trezor: ["T", 150],
+    metamask: ["M", 28],
+    phantom: ["P", 265],
+    trust: ["TW", 210],
+    exodus: ["EX", 285],
   };
   if (known[kind]) return known[kind];
   let h = 0;
@@ -99,4 +107,9 @@ export function money(v: string | undefined, ccy: string): string {
 
 export function day(iso: string) {
   return new Date(iso).toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** The badge of a source: a Wallet shows the app it was added for. */
+export function badgeKind(s: { kind: string; settings?: Record<string, string> | null }) {
+  return s.kind === "wallet" && s.settings?.app ? s.settings.app : s.kind;
 }

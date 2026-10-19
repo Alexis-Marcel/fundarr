@@ -198,27 +198,109 @@ input[type="date"] {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.55rem 0.75rem;
+  padding: 0.6rem 0.75rem;
   min-width: 0;
+}
+.account-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+.account-head {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.account-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  background: transparent;
+  border-color: transparent;
+  padding: 0.15rem 0.35rem;
+  margin-left: -0.35rem;
+}
+.account-name:hover {
+  border-color: var(--line);
+}
+.account-name::placeholder {
+  color: var(--text);
+  opacity: 1;
+}
+.account-head select {
+  padding: 0.15rem 0.4rem;
+  font-size: 0.85em;
+}
+.account-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.85em;
+  min-width: 0;
+}
+.account-sub code {
+  color: var(--muted);
+}
+.found {
+  color: var(--ok);
+}
+.found-warn {
+  color: var(--warn);
+}
+.found-error {
+  color: var(--error);
+}
+.crypto-icon {
+  flex: none;
+  border-radius: 50%;
+}
+.crypto-mono {
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.7em;
+  font-weight: 800;
+  color: hsl(var(--hue) 70% 78%);
+  background: hsl(var(--hue) 35% 18%);
+}
+.guide {
+  margin-top: 0.4rem;
+  font-size: 0.88em;
+  color: var(--muted);
+}
+.guide p {
+  margin: 0 0 0.5rem;
+}
+.guide-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+.guide-steps li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.6rem;
+  row-gap: 0.1rem;
+  align-items: center;
+}
+.guide-steps strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.guide-steps li > span:last-child {
+  grid-column: 1 / -1;
+}
+.guide-icons {
+  display: inline-flex;
+}
+.guide-icons .crypto-icon + .crypto-icon {
+  margin-left: -5px;
+  box-shadow: 0 0 0 2px var(--ink-2);
 }
 .accounts li + li {
   border-top: 1px solid var(--line-soft);
-}
-.account-chain {
-  flex: 0 0 auto;
-  font-weight: 600;
-}
-select.account-chain {
-  padding: 0.2rem 0.4rem;
-}
-.account-key {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  font-size: 0.85em;
 }
 .account-add {
   display: flex;

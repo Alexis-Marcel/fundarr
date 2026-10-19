@@ -284,14 +284,15 @@ func TestWalletHistoryAndBalance(t *testing.T) {
 	if f.calls["/address/"+a["r2"]+"/txs/chain"] != 1 || f.calls["/address/"+a["r2"]+"/txs/chain/e05"] != 1 {
 		t.Errorf("paging calls %v", f.calls)
 	}
-	// Gap limit: receive 0..2 used, then 20 empty (0..22); change 0 used, then 20 (0..20).
+	// Gap limit: receive 0..2 used, then 20 empty (0..22); change 0 used,
+	// then 20 (0..20). Asked 20 at a time: 0..39 on both chains.
 	n := 0
 	for p := range f.calls {
 		if strings.Count(p, "/") == 2 {
 			n++
 		}
 	}
-	if n != 23+21 {
+	if n != 40+40 {
 		t.Errorf("addresses checked %d", n)
 	}
 	if !strings.Contains(strings.Join(logs, "\n"), "4 used") {

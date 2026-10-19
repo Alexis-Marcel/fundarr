@@ -470,3 +470,17 @@ func TestSecretListsEditMasked(t *testing.T) {
 		t.Error("an edited masked line must be refused")
 	}
 }
+
+func TestSecretListsKeepLabels(t *testing.T) {
+	old := "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNf\tSavings"
+	m := maskLines(old)
+	if !strings.HasSuffix(m, "\tSavings") || strings.Contains(m, "Vz398") {
+		t.Fatalf("masked %q", m)
+	}
+	// Renamed, same key.
+	val, _, _ := strings.Cut(m, "\t")
+	got, err := unmaskLines(val+"\tCold storage", old)
+	if err != nil || got != "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNf\tCold storage" {
+		t.Errorf("rename %q %v", got, err)
+	}
+}

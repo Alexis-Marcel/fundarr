@@ -71,15 +71,45 @@ type tx struct {
 	} `json:"status"`
 }
 
-// failover moves to the next public server, if any is left.
-func (c *client) failover() bool {
+// down remembers, for every wallet of the process, public servers that
+// stopped answering: the next run starts on one that works.
+var down = struct {
+	sync.Mutex
+	until map[string]time.Time
+}{until: map[string]time.Time{}}
+
+const downFor = 10 * time.Minute
+
+// reqTimeout bounds one request: a server that does not answer is left
+// for the next one instead of holding the run.
+const reqTimeout = 20 * time.Second
+
+// failover moves past a server that failed, if another is left. Calls in
+// parallel may fail on the same server: only the first one moves on, the
+// others just retry on the new one.
+func (c *client) failover(failed string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.base != failed {
+		return true
+	}
 	if len(c.fallback) == 0 {
 		return false
 	}
+	down.Lock()
+	down.until[c.base] = time.Now().Add(downFor)
+	down.Unlock()
 	c.base, c.blockbook, c.fallback = c.fallback[0].url, c.fallback[0].blockbook, c.fallback[1:]
 	return true
+}
+
+// skipDown starts on the first public server not known to be down.
+func (c *client) skipDown() {
+	down.Lock()
+	defer down.Unlock()
+	for len(c.fallback) > 0 && time.Now().Before(down.until[c.base]) {
+		c.base, c.blockbook, c.fallback = c.fallback[0].url, c.fallback[0].blockbook, c.fallback[1:]
+	}
 }
 
 // get fetches path and decodes JSON, retrying on rate limits and server
@@ -87,31 +117,39 @@ func (c *client) failover() bool {
 func (c *client) get(ctx context.Context, path string, out any) error {
 	backoff := 2 * time.Second
 	for attempt := 0; ; attempt++ {
-		// A server that cannot be reached twice in a row is likely down or
-		// blocked on this network: do not spend minutes on it.
+		// A server that cannot be reached is likely down or blocked on this
+		// network: with another one to try, do not wait for it.
 		limit := 5
 		if len(c.fallback) > 0 {
-			limit = 1
+			limit = 0
 		}
+		// Each request books its slot: calls in parallel still start pause
+		// apart.
 		c.mu.Lock()
-		wait := c.pause - time.Since(c.last)
+		now := time.Now()
+		slot := c.last.Add(c.pause)
+		if slot.Before(now) {
+			slot = now
+		}
+		c.last = slot
+		base := c.base
 		c.mu.Unlock()
-		if err := c.sleep(ctx, wait); err != nil {
+		if err := c.sleep(ctx, slot.Sub(now)); err != nil {
 			return err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+		rctx, cancel := context.WithTimeout(ctx, reqTimeout)
+		req, err := http.NewRequestWithContext(rctx, http.MethodGet, base+path, nil)
 		if err != nil {
+			cancel()
 			return err
 		}
 		resp, err := c.http.Do(req)
-		c.mu.Lock()
-		c.last = time.Now()
-		c.mu.Unlock()
 		var body []byte
 		if err == nil {
 			body, err = io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 			resp.Body.Close()
 		}
+		cancel()
 		if err != nil {
 			// Timeouts and dropped connections are common on public servers:
 			// retry them like a rate limit, unless the run was cancelled.
@@ -122,7 +160,7 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 				backoff *= 2
 				continue
 			}
-			if ctx.Err() == nil && c.failover() {
+			if ctx.Err() == nil && c.failover(base) {
 				attempt, backoff = -1, 2*time.Second
 				continue
 			}
@@ -136,7 +174,7 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 				backoff *= 2
 				continue
 			}
-			if c.failover() {
+			if c.failover(base) {
 				attempt, backoff = -1, 2*time.Second
 				continue
 			}
@@ -168,6 +206,32 @@ func (c *client) address(ctx context.Context, addr string) (addrStats, error) {
 	var s addrStats
 	err := c.get(ctx, "/address/"+addr, &s)
 	return s, err
+}
+
+// scanWorkers: addresses asked at once while scanning.
+const scanWorkers = 5
+
+// addresses asks several addresses at once; the first error wins.
+func (c *client) addresses(ctx context.Context, addrs []string) ([]addrStats, error) {
+	out := make([]addrStats, len(addrs))
+	errs := make([]error, len(addrs))
+	sem := make(chan struct{}, scanWorkers)
+	var wg sync.WaitGroup
+	for i, a := range addrs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			out[i], errs[i] = c.address(ctx, a)
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // chainTxs returns every confirmed transaction of an address, 25 per page.

@@ -5,8 +5,10 @@ package source
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,9 @@ type Field struct {
 	Lines bool `json:"lines,omitempty"`
 	// Advanced: rarely needed, tucked away in the form.
 	Advanced bool `json:"advanced,omitempty"`
+	// Hidden: set by the UI itself (a choice made before the form), never
+	// shown as a field.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // Definition describes a kind of source.
@@ -45,6 +50,10 @@ type Definition struct {
 	// Detect, for a Lines field, recognizes one value (a key, an address)
 	// so the UI can say what it is before saving.
 	Detect func(value string) (Detected, error) `json:"-"`
+	// Preview reads what one value of a list holds now, so the user sees
+	// before saving that it is the right account. cfg carries the source's
+	// other values (servers, keys).
+	Preview func(ctx context.Context, value string, cfg Config) ([]model.Balance, error) `json:"-"`
 	// Hidden: kept for sources already set up, not offered for new ones
 	// (another kind covers it).
 	Hidden bool `json:"hidden,omitempty"`
@@ -56,14 +65,33 @@ type Definition struct {
 // is how to store it (it may gain a prefix that picks the chain). Choices
 // are the other chains the same value can be read on.
 type Detected struct {
+	Kind    string   `json:"kind"` // the chain, for icons: "bitcoin", "evm"…
 	Chain   string   `json:"chain"`
 	Value   string   `json:"value"`
 	Choices []Choice `json:"choices,omitempty"`
 }
 
 type Choice struct {
+	Kind  string `json:"kind"`
 	Chain string `json:"chain"`
 	Value string `json:"value"`
+}
+
+// SplitLabel separates a list value from the name the user gave it: the
+// name follows a tab ("zpub…\tSavings").
+func SplitLabel(line string) (value, label string) {
+	v, l, _ := strings.Cut(line, "\t")
+	return strings.TrimSpace(v), strings.TrimSpace(l)
+}
+
+// NewHTTP is the client connectors share: a server that cannot be reached
+// is given up after seconds, so a fallback gets its turn, while a slow
+// answer still has a minute.
+func NewHTTP() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	t.TLSHandshakeTimeout = 8 * time.Second
+	return &http.Client{Timeout: 60 * time.Second, Transport: t}
 }
 
 // Config is what a connector receives: its settings and an HTTP client.

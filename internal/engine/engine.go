@@ -43,7 +43,7 @@ func New(st *store.Store, box *secret.Box, log *slog.Logger) *Engine {
 	return &Engine{
 		Store:   st,
 		Box:     box,
-		HTTP:    &http.Client{Timeout: 60 * time.Second},
+		HTTP:    source.NewHTTP(),
 		Log:     log,
 		Now:     func() time.Time { return time.Now().UTC() },
 		running: map[string]bool{},
