@@ -17,7 +17,11 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+	// Clock dates new rows (replaceable in tests).
+	Clock func() time.Time
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS sources (
@@ -96,6 +100,26 @@ CREATE TABLE IF NOT EXISTS statements (
 	activities INTEGER NOT NULL,
 	at         INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS transfer_links (
+	out_id TEXT NOT NULL,
+	in_id  TEXT NOT NULL,
+	kind   TEXT NOT NULL, -- "pair" (made by the user) or "refuse"
+	at     INTEGER NOT NULL,
+	PRIMARY KEY (out_id, in_id)
+);
+CREATE TABLE IF NOT EXISTS prices (
+	pair  TEXT NOT NULL, -- provider and market, e.g. "binance:BTCEUR"
+	day   TEXT NOT NULL, -- YYYY-MM-DD, UTC
+	price TEXT NOT NULL, -- close of the day
+	PRIMARY KEY (pair, day)
+);
+CREATE TABLE IF NOT EXISTS price_windows (
+	pair       TEXT NOT NULL,
+	from_day   TEXT NOT NULL,
+	to_day     TEXT NOT NULL,
+	fetched_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS price_windows_pair ON price_windows(pair);
 CREATE TABLE IF NOT EXISTS settings (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -112,7 +136,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, Clock: time.Now}, nil
 }
 
 func (s *Store) Close() error                   { return s.db.Close() }
@@ -363,7 +387,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
 		return 0, err
 	}
 	defer stmt.Close()
-	now := ms(time.Now())
+	now := ms(s.Clock())
 	added := 0
 	for _, a := range acts {
 		data, err := json.Marshal(a)
@@ -392,6 +416,10 @@ type ActivityFilter struct {
 	UndeliveredTo string
 	// Newest lists the most recent first (oldest first otherwise).
 	Newest bool
+	// SettledBefore leaves out adjustments made after this time: a balance
+	// correction waits a while before going out, in case the platform's
+	// history catches up.
+	SettledBefore time.Time
 }
 
 func (s *Store) Activities(ctx context.Context, f ActivityFilter) ([]model.Activity, error) {
@@ -408,6 +436,10 @@ func (s *Store) Activities(ctx context.Context, f ActivityFilter) ([]model.Activ
 	if f.UndeliveredTo != "" {
 		q += ` AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.activity_id = a.id AND d.destination_id = ? AND d.status != 'failed')`
 		args = append(args, f.UndeliveredTo)
+	}
+	if !f.SettledBefore.IsZero() {
+		q += ` AND NOT (a.type = 'adjustment' AND a.created_at > ?)`
+		args = append(args, ms(f.SettledBefore))
 	}
 	if f.Newest {
 		q += ` ORDER BY a.time DESC, a.id DESC`
@@ -436,6 +468,187 @@ func (s *Store) Activities(ctx context.Context, f ActivityFilter) ([]model.Activ
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// DeleteActivities removes some of a source's activities (and what was
+// recorded about their delivery).
+func (s *Store) DeleteActivities(ctx context.Context, sourceID string, ids []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM activities WHERE source_id = ? AND id = ?`, sourceID, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Activity returns one activity of a source.
+func (s *Store) Activity(ctx context.Context, sourceID, id string) (*model.Activity, error) {
+	var data string
+	err := s.db.QueryRowContext(ctx, `SELECT data FROM activities WHERE source_id = ? AND id = ?`, sourceID, id).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var a model.Activity
+	return &a, json.Unmarshal([]byte(data), &a)
+}
+
+// Adjustment is a balance correction with what the UI needs about it.
+type Adjustment struct {
+	model.Activity
+	Created   time.Time `json:"created"`
+	Delivered bool      `json:"delivered"` // sent to at least one destination
+}
+
+// Adjustments lists a source's balance corrections, oldest first.
+func (s *Store) Adjustments(ctx context.Context, sourceID string) ([]Adjustment, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT a.data, a.created_at,
+EXISTS (SELECT 1 FROM deliveries d WHERE d.activity_id = a.id AND d.status IN ('delivered', 'duplicate'))
+FROM activities a WHERE a.source_id = ? AND a.type = 'adjustment' ORDER BY a.time, a.id`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Adjustment
+	for rows.Next() {
+		var data string
+		var created int64
+		var adj Adjustment
+		if err := rows.Scan(&data, &created, &adj.Delivered); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(data), &adj.Activity); err != nil {
+			return nil, err
+		}
+		adj.Created = time.UnixMilli(created).UTC()
+		out = append(out, adj)
+	}
+	return out, rows.Err()
+}
+
+// ---- transfers between your own accounts
+
+// TransferLink is a choice the user made about a withdrawal and a deposit.
+type TransferLink struct {
+	OutID string `json:"outId"`
+	InID  string `json:"inId"`
+	Kind  string `json:"kind"` // "pair" or "refuse"
+}
+
+func (s *Store) TransferLinks(ctx context.Context) ([]TransferLink, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT out_id, in_id, kind FROM transfer_links ORDER BY at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TransferLink
+	for rows.Next() {
+		var l TransferLink
+		if err := rows.Scan(&l.OutID, &l.InID, &l.Kind); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// PutTransferLink records a choice; kind "" forgets the choices about out
+// and in (back to automatic matching).
+func (s *Store) PutTransferLink(ctx context.Context, l TransferLink) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	switch l.Kind {
+	case "":
+		_, err = tx.ExecContext(ctx, `DELETE FROM transfer_links WHERE (out_id = ? OR in_id = ?) AND kind = 'pair' OR out_id = ? AND in_id = ?`, l.OutID, l.InID, l.OutID, l.InID)
+	case "pair":
+		// One side belongs to one transfer: a new pairing replaces older ones.
+		if _, err = tx.ExecContext(ctx, `DELETE FROM transfer_links WHERE out_id = ? OR in_id = ?`, l.OutID, l.InID); err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO transfer_links (out_id, in_id, kind, at) VALUES (?, ?, 'pair', ?)`, l.OutID, l.InID, ms(time.Now()))
+		}
+	case "refuse":
+		_, err = tx.ExecContext(ctx, `INSERT INTO transfer_links (out_id, in_id, kind, at) VALUES (?, ?, 'refuse', ?)
+ON CONFLICT(out_id, in_id) DO UPDATE SET kind='refuse', at=excluded.at`, l.OutID, l.InID, ms(time.Now()))
+	default:
+		return fmt.Errorf("unknown link kind %q", l.Kind)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ---- prices
+
+// PriceSeries returns the daily closes stored for a market, by day.
+func (s *Store) PriceSeries(ctx context.Context, pair string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT day, price FROM prices WHERE pair = ?`, pair)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var d, p string
+		if err := rows.Scan(&d, &p); err != nil {
+			return nil, err
+		}
+		out[d] = p
+	}
+	return out, rows.Err()
+}
+
+// PriceWindow is a range of days already asked to a provider.
+type PriceWindow struct {
+	From, To string // YYYY-MM-DD
+	Fetched  time.Time
+}
+
+func (s *Store) PriceWindows(ctx context.Context, pair string) ([]PriceWindow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT from_day, to_day, fetched_at FROM price_windows WHERE pair = ?`, pair)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PriceWindow
+	for rows.Next() {
+		var w PriceWindow
+		var at int64
+		if err := rows.Scan(&w.From, &w.To, &at); err != nil {
+			return nil, err
+		}
+		w.Fetched = time.UnixMilli(at).UTC()
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// PutPrices stores closes fetched for a window of days.
+func (s *Store) PutPrices(ctx context.Context, pair string, w PriceWindow, closes map[string]string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for d, p := range closes {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO prices (pair, day, price) VALUES (?, ?, ?)
+ON CONFLICT(pair, day) DO UPDATE SET price=excluded.price`, pair, d, p); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO price_windows (pair, from_day, to_day, fetched_at) VALUES (?, ?, ?, ?)`, pair, w.From, w.To, ms(w.Fetched)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CountActivities(ctx context.Context, sourceID string) (int, error) {

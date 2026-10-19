@@ -3,6 +3,7 @@ import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { api, type DestDef, type Session, type SourceDef } from "./api";
 import { ActivityPage } from "./pages/Activity";
 import { SettingsPage } from "./pages/Settings";
+import { TransfersPage } from "./pages/Transfers";
 import { DestinationsPage } from "./pages/Destinations";
 import { SourceDetail } from "./pages/SourceDetail";
 import { SourcesPage } from "./pages/Sources";
@@ -166,6 +167,7 @@ function Shell({ session }: { session: Session }) {
         <nav>
           <NavLink to="/sources">Sources</NavLink>
           <NavLink to="/destinations">Destinations</NavLink>
+          <NavLink to="/transfers">Transfers</NavLink>
           <NavLink to="/activity">Activity log</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
@@ -192,6 +194,7 @@ function Shell({ session }: { session: Session }) {
             <Route path="/sources" element={<SourcesPage defs={defs.sources} />} />
             <Route path="/sources/:id" element={<SourceDetail defs={defs.sources} />} />
             <Route path="/destinations" element={<DestinationsPage defs={defs.destinations} />} />
+            <Route path="/transfers" element={<TransfersPage />} />
             <Route path="/activity" element={<ActivityPage names={names} />} />
             <Route path="/settings" element={<SettingsPage session={session} />} />
             <Route path="*" element={<Navigate to="/sources" replace />} />

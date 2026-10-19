@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { api, type Session } from "../api";
+import { usePoll } from "../lib";
 
 const MODE: Record<Session["mode"], string> = {
   password: "Username and password",
@@ -14,9 +15,10 @@ export function SettingsPage({ session }: { session: Session }) {
       <header className="page-head">
         <div>
           <h1>Settings</h1>
-          <p className="lede">How you sign in to Fundarr.</p>
+          <p className="lede">How values are shown, and how you sign in to Fundarr.</p>
         </div>
       </header>
+      <Valuation />
       <div className="card settings-card">
         <dl className="facts">
           <dt>Sign-in</dt>
@@ -69,5 +71,27 @@ function ChangePassword() {
         <button className="btn btn-primary">Change password</button>
       </div>
     </form>
+  );
+}
+
+function Valuation() {
+  const { data, setData } = usePoll(() => api.settings(), 600000);
+  if (!data) return null;
+  return (
+    <div className="card settings-card">
+      <h2>Valuation</h2>
+      <label className="field narrow">
+        <span>Currency</span>
+        <select value={data.currency} onChange={async (e) => setData(await api.putSettings({ currency: e.target.value }))}>
+          {data.currencies.map((c) => (
+            <option key={c}>{c}</option>
+          ))}
+        </select>
+        <small>
+          Corrections and transfers are valued in it, with daily prices from Binance and OKX market data and the European Central Bank&apos;s
+          exchange rates. Destinations get costs in each account&apos;s own currency.
+        </small>
+      </label>
+    </div>
   );
 }

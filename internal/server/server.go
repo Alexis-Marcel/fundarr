@@ -102,6 +102,13 @@ func (s *Server) routes() {
 	api("DELETE /api/routes", s.deleteRoute)
 	api("POST /api/routes/reset", s.resetRoute)
 	api("GET /api/runs", s.runs)
+	api("GET /api/sources/{id}/adjustments", s.adjustments)
+	api("POST /api/sources/{id}/adjustments/{aid}", s.reclassify)
+	api("DELETE /api/sources/{id}/activities/{aid}", s.deleteManual)
+	api("GET /api/transfers", s.transfers)
+	api("PUT /api/transfers", s.putTransfer)
+	api("GET /api/settings", s.getSettings)
+	api("PUT /api/settings", s.putSettings)
 	m.HandleFunc("/", s.static)
 }
 
@@ -174,14 +181,22 @@ type sourceView struct {
 	BalancesAt time.Time   `json:"balancesAt"`
 	Gaps       []model.Gap `json:"gaps"`
 	SecretSet  []string    `json:"secretsSet"` // which secret fields have a value
+	// Corrections: balance corrections in the history; Adjust: whether
+	// Fundarr makes them for this source.
+	Corrections int  `json:"corrections"`
+	Adjust      bool `json:"adjust"`
 }
 
 func (s *Server) viewSource(ctx context.Context, e *store.Entity) sourceView {
-	v := sourceView{Entity: e, Interval: int(e.Interval / time.Minute), Running: s.eng.Running(e.ID)}
+	v := sourceView{Entity: e, Interval: int(e.Interval / time.Minute), Running: s.eng.Running(e.ID), Adjust: e.Settings[engine.AdjustSetting] != "off"}
 	if d, err := source.Get(e.Kind); err == nil {
 		v.Category = d.Category
 	}
 	v.Activities, _ = s.st.CountActivities(ctx, e.ID)
+	if adjs, err := s.st.Adjustments(ctx, e.ID); err == nil {
+		v.Corrections = len(adjs)
+		v.Activities -= len(adjs)
+	}
 	_, v.BalancesAt, _ = s.st.Balances(ctx, e.ID)
 	if !v.BalancesAt.IsZero() {
 		v.Gaps, _ = s.eng.Reconcile(ctx, e.ID)
@@ -216,6 +231,8 @@ type entityInput struct {
 	Enabled  *bool             `json:"enabled"`
 	Interval int               `json:"intervalMinutes"`
 	SkipTest bool              `json:"skipTest"`
+	// Adjust turns balance corrections on or off (sources only).
+	Adjust *bool `json:"adjust"`
 }
 
 // split separates a form's values into settings and secrets according to the
@@ -267,6 +284,15 @@ func (s *Server) buildSource(ctx context.Context, in entityInput, existing *stor
 	e := &store.Entity{ID: newID(), Kind: kind, Name: strings.TrimSpace(in.Name), Settings: settings, Secrets: sealed, Enabled: true, Interval: 6 * time.Hour}
 	if existing != nil {
 		e.ID, e.Created, e.State, e.Enabled, e.Interval = existing.ID, existing.Created, existing.State, existing.Enabled, existing.Interval
+		if v := existing.Settings[engine.AdjustSetting]; v != "" {
+			e.Settings[engine.AdjustSetting] = v
+		}
+	}
+	if in.Adjust != nil {
+		delete(e.Settings, engine.AdjustSetting)
+		if !*in.Adjust {
+			e.Settings[engine.AdjustSetting] = "off"
+		}
 	}
 	if e.Name == "" {
 		e.Name = def.Name
@@ -365,6 +391,12 @@ func (s *Server) updateSource(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	if in.Adjust != nil {
+		if err := s.eng.Readjust(r.Context(), e.ID); err != nil && !errors.Is(err, engine.ErrBusy) {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	writeJSON(w, s.viewSource(r.Context(), e))
 }
 
@@ -435,12 +467,22 @@ func (s *Server) sourceHoldings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type line struct {
-		Asset    model.Asset `json:"asset"`
-		Replayed string      `json:"replayed"`
-		Reported string      `json:"reported"`
-		Gap      bool        `json:"gap"`
+		Asset      model.Asset `json:"asset"`
+		Replayed   string      `json:"replayed"`   // from the platform's history (and what you entered)
+		Correction string      `json:"correction"` // net balance corrections
+		Reported   string      `json:"reported"`
+		Gap        bool        `json:"gap"` // still differs, corrections included
 	}
-	replayed := model.Holdings(acts)
+	var history, corrections []model.Activity
+	for _, a := range acts {
+		if a.Type == model.Adjustment {
+			corrections = append(corrections, a)
+		} else {
+			history = append(history, a)
+		}
+	}
+	replayed := model.Holdings(history)
+	corrected := model.Holdings(corrections)
 	reported := map[string]model.Amount{}
 	for _, b := range bal {
 		cur, ok := reported[b.Asset.Key()]
@@ -461,16 +503,19 @@ func (s *Server) sourceHoldings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[k] = true
-		rp, rr := replayed[k].Qty, reported[k].Qty
-		if rp.IsZero() && rr.IsZero() {
+		rp, rc, rr := replayed[k].Qty, corrected[k].Qty, reported[k].Qty
+		if rp.IsZero() && rr.IsZero() && rc.IsZero() {
 			return
 		}
-		out = append(out, line{Asset: a, Replayed: rp.String(), Reported: rr.String(), Gap: gaps[k]})
+		out = append(out, line{Asset: a, Replayed: rp.String(), Correction: rc.String(), Reported: rr.String(), Gap: gaps[k]})
 	}
 	for k, a := range reported {
 		add(k, a.Asset)
 	}
 	for k, a := range replayed {
+		add(k, a.Asset)
+	}
+	for k, a := range corrected {
 		add(k, a.Asset)
 	}
 	writeJSON(w, map[string]any{"holdings": out, "balancesAt": at})

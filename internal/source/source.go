@@ -34,6 +34,9 @@ type Definition struct {
 	// Statement, when set, says how to export the platform's own statement
 	// for the connector's Importer (and enables the import in the UI).
 	Statement string `json:"statement,omitempty"`
+	// Limits says what the platform's API cannot tell, shown where balance
+	// corrections are, so the user knows why they exist.
+	Limits string `json:"limits,omitempty"`
 	// New builds a connector from its settings (secrets decrypted).
 	New func(cfg Config) (Source, error) `json:"-"`
 }

@@ -16,7 +16,10 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 
 - **Sources** fetch the full history: trades, converts, deposits and withdrawals (with tx hashes), staking and earn rewards, fees, dust conversions, card purchases. Every amount is an exact decimal.
 - **Reconciliation.** Fundarr replays the history and compares it with what the platform reports. When the two match, the history is complete. When they don't, the gap is shown asset by asset, so you know before your portfolio tracker shows wrong numbers.
-- **Statements.** When an API leaves holes, import the platform's own export (Binance today): it becomes the history for its period, keeping the API's richer details where both agree, and syncs carry on after it.
+- **Corrections.** APIs forget: Binance's only returns about two years of spot trades. What the history does not explain becomes a balance correction, placed where it belongs (just before the coins are first spent) and valued at that day's price, so quantities and totals stay right. Corrections wait 48 hours before going out, in case the history catches up; you can say what one really was (a purchase, a reward, a transfer) and it becomes that activity.
+- **Statements.** When an API leaves holes, import the platform's own export (Binance today): it becomes the history for its period, replacing the corrections with the real trades, keeping the API's richer details where both agree. Fundarr keeps everything it fetches, so an export is needed once, for the past.
+- **Transfers.** A withdrawal on one source and the deposit it became on another (Binance to your Ledger) are paired, by transaction hash or by amount and time. Destinations move the coins between accounts at their purchase cost, instead of seeing a sale and a new purchase.
+- **Prices.** Daily prices from Binance and OKX public market data, exchange rates from the European Central Bank (via Frankfurter): no account or key. They value corrections, rewards and airdrops, which then reach destinations with a cost.
 - **Destinations** receive new activities after every sync. Each delivery is recorded, so nothing is sent twice and failures are retried.
 - **One small container**: a Go binary with the web UI built in, plus a SQLite file. It runs on a Raspberry Pi.
 
@@ -24,7 +27,7 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 
 | Source | History | Notes |
 |---|---|---|
-| Binance | Since 2017 | Read-only API key. Spot trades (including delisted pairs), converts, Auto-Invest, card and bank purchases, Simple Earn rewards, ETH/SOL staking, distributions, dust, Binance Pay (18 months), P2P (6 months). Binance's API does not return every spot trade (orders from the simple Buy/Sell screens are missing): import the Transaction History export once and it becomes the reference for its period. |
+| Binance | Since 2017 | Read-only API key. Spot trades, converts, Auto-Invest, card and bank purchases, Simple Earn rewards, ETH/SOL staking, distributions, dust, Binance Pay (18 months), P2P (6 months). Binance's API returns spot trades from about the last two years only, and none on delisted pairs; Binance offers no API for its transaction history export. Fundarr corrects the balances, and importing the export once replaces the corrections with the real trades. |
 | OKX | Since Feb 2021 | Read-only v5 key. Older trading history comes from OKX's quarterly archives, ready about 2 hours after the first sync. Bank (SEPA) deposits and withdrawals included. Regional domains (EEA, US) detected. |
 | Bitcoin wallet | Full | Extended public key (xpub, ypub, zpub: Ledger, Trezor, Sparrow…). Scans every address type in use; any Esplora server (mempool.space by default, or your own). |
 | Ethereum & EVM wallet | Full | Public address on Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis: ETH, tokens, gas. Blockscout without a key, or Etherscan v2. DEX swaps appear as two legs. |
@@ -33,7 +36,7 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 |---|---|
 | Wealthfolio | Through its MCP endpoint (`WF_MCP_ENABLED=true` and an access token). Stablecoins can count as USD or EUR cash, so crypto bought with them has a price. |
 
-Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)), Solana, Ghostfolio, CSV, and historical prices (so staking rewards count as income). Adding one is a single Go package; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)), Solana, Ghostfolio, CSV. Adding one is a single Go package; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Run it
 

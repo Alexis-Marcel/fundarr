@@ -63,6 +63,9 @@ func init() {
 			{Name: "base_url", Label: "API URL", Optional: true, Help: "leave empty; for tests"},
 		},
 		Statement: statementHelp,
+		Limits: "Binance's API only returns spot trades from about the last two years, and none on pairs it has delisted. " +
+			"Older purchases are missing from what it gives, so Fundarr corrects the balances, at the day's price. " +
+			"Fundarr keeps everything it fetches, so this only concerns your past: import Binance's transaction history once and the corrections give way to the real trades.",
 		Setup: "In Binance, open Account → API Management and create a system-generated API key. " +
 			"Leave ONLY \"Enable Reading\" checked: no spot/margin trading, no withdrawals, no transfers. " +
 			"Restrict it to your server's IP address if you can. Fundarr refuses keys that can trade or withdraw.",

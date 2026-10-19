@@ -15,6 +15,7 @@ import (
 
 	"github.com/Alexis-Marcel/fundarr/internal/dest"
 	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
@@ -28,6 +29,9 @@ type Engine struct {
 	Box   *secret.Box
 	HTTP  *http.Client
 	Log   *slog.Logger
+	// Prices values assets (corrections, rewards, transfers); nil leaves
+	// them without a price.
+	Prices *price.Service
 	// Now is replaceable in tests.
 	Now func() time.Time
 
@@ -145,9 +149,12 @@ func (l *runLog) String() string {
 
 // SyncResult summarizes one sync.
 type SyncResult struct {
-	Fetched int         `json:"fetched"`
-	New     int         `json:"new"`
-	Gaps    []model.Gap `json:"gaps"`
+	Fetched int `json:"fetched"`
+	New     int `json:"new"`
+	// Adjusted: assets whose history did not add up and got a correction.
+	Adjusted int `json:"adjusted"`
+	// Gaps left unexplained (corrections turned off for the source).
+	Gaps []model.Gap `json:"gaps"`
 }
 
 // Build instantiates the connector of a configured source.
@@ -197,6 +204,9 @@ func (e *Engine) sync0(ctx context.Context, id string, full bool) (*SyncResult, 
 	summary := ""
 	if res != nil {
 		summary = fmt.Sprintf("%d fetched, %d new", res.Fetched, res.New)
+		if res.Adjusted > 0 {
+			summary += fmt.Sprintf(", %d asset(s) corrected", res.Adjusted)
+		}
 		if len(res.Gaps) > 0 {
 			summary += fmt.Sprintf(", %d balance gap(s)", len(res.Gaps))
 		}
@@ -209,10 +219,9 @@ func (e *Engine) sync0(ctx context.Context, id string, full bool) (*SyncResult, 
 	if err != nil {
 		return res, err
 	}
-	// New history goes out right away; a push failure does not fail the sync.
-	if res.New > 0 {
-		e.pushSource(ctx, id)
-	}
+	// New history (and corrections whose wait is over) goes out right away;
+	// a push failure does not fail the sync.
+	e.pushSource(ctx, id)
 	return res, nil
 }
 
@@ -292,12 +301,19 @@ func (e *Engine) sync(ctx context.Context, ent *store.Entity, log *runLog) (*Syn
 		return res, nil, err
 	}
 	log.add("%d balances", len(bal))
-	res.Gaps, err = e.Reconcile(ctx, ent.ID)
+	gaps, _, err := e.Adjust(ctx, ent)
 	if err != nil {
 		return res, nil, err
 	}
-	for _, g := range res.Gaps {
+	for _, g := range gaps {
 		log.add("balance gap %s: history gives %s, platform says %s", g.Asset, g.Replayed, g.Reported)
+	}
+	if res.Gaps, err = e.Reconcile(ctx, ent.ID); err != nil {
+		return res, nil, err
+	}
+	res.Adjusted = len(gaps) - len(res.Gaps)
+	if res.Adjusted > 0 {
+		log.add("%d asset(s) corrected so balances match; corrections wait %s before going to destinations", res.Adjusted, Hold)
 	}
 	return res, src.State(), nil
 }
@@ -387,6 +403,9 @@ func (e *Engine) Import(ctx context.Context, id, name string, data []byte) (*Imp
 	if err != nil {
 		return nil, err
 	}
+	if _, _, err := e.Adjust(ctx, ent); err != nil {
+		return nil, err
+	}
 	gaps, err := e.Reconcile(ctx, id)
 	if err != nil {
 		return nil, err
@@ -454,6 +473,9 @@ func (e *Engine) Push(ctx context.Context, destID string) (*PushResult, error) {
 	if !ent.Enabled {
 		return &PushResult{Counts: map[dest.Status]int{}}, nil
 	}
+	if n, err := e.pending(ctx, destID); err == nil && n == 0 && ent.LastErr == "" {
+		return &PushResult{Counts: map[dest.Status]int{}}, nil
+	}
 	runID, _ := e.Store.StartRun(ctx, "push", destID)
 	log := &runLog{start: time.Now()}
 	res, err := e.push(ctx, ent, log)
@@ -481,6 +503,26 @@ func (e *Engine) Push(ctx context.Context, destID string) (*PushResult, error) {
 	return res, err
 }
 
+// pending counts what is waiting to go to a destination.
+func (e *Engine) pending(ctx context.Context, destID string) (int, error) {
+	routes, err := e.Store.Routes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range routes {
+		if r.DestinationID != destID {
+			continue
+		}
+		p, err := e.Store.Activities(ctx, store.ActivityFilter{SourceID: r.SourceID, Since: r.Since, UndeliveredTo: destID, SettledBefore: e.Now().Add(-Hold)})
+		if err != nil {
+			return 0, err
+		}
+		n += len(p)
+	}
+	return n, nil
+}
+
 func (e *Engine) push(ctx context.Context, ent *store.Entity, log *runLog) (*PushResult, error) {
 	res := &PushResult{Counts: map[dest.Status]int{}}
 	d, err := e.BuildDest(ent)
@@ -491,6 +533,10 @@ func (e *Engine) push(ctx context.Context, ent *store.Entity, log *runLog) (*Pus
 	if err != nil {
 		return res, err
 	}
+	// What crosses sources (transfers, costs) is computed once per push.
+	var ledger *Ledger
+	var currencies map[string]string
+	costs := map[string]map[string]decimal.Decimal{} // currency → activity → cost
 	for _, r := range routes {
 		if r.DestinationID != ent.ID {
 			continue
@@ -499,14 +545,56 @@ func (e *Engine) push(ctx context.Context, ent *store.Entity, log *runLog) (*Pus
 		if err != nil {
 			return res, err
 		}
-		pending, err := e.Store.Activities(ctx, store.ActivityFilter{SourceID: r.SourceID, Since: r.Since, UndeliveredTo: ent.ID})
+		pending, err := e.Store.Activities(ctx, store.ActivityFilter{SourceID: r.SourceID, Since: r.Since, UndeliveredTo: ent.ID, SettledBefore: e.Now().Add(-Hold)})
 		if err != nil {
 			return res, err
 		}
 		log.add("%s → %s: %d to deliver", src.Name, r.Account, len(pending))
+		if len(pending) == 0 {
+			continue
+		}
+		if ledger == nil {
+			if ledger, err = e.Ledger(ctx); err != nil {
+				return res, err
+			}
+			currencies = map[string]string{}
+			if accs, err := d.Accounts(ctx); err == nil {
+				for _, a := range accs {
+					currencies[a.ID] = strings.ToUpper(a.Currency)
+				}
+			} else {
+				log.add("accounts: %v (costs left out)", err)
+			}
+		}
+		var cost map[string]decimal.Decimal
+		if ccy := currencies[r.Account]; ccy != "" {
+			if cost = costs[ccy]; cost == nil {
+				log.add("valuing in %s", ccy)
+				cost = e.Costs(ctx, ledger, ccy)
+				costs[ccy] = cost
+			}
+		}
+		from := map[string]string{}
+		names := map[string]string{}
+		for _, a := range pending {
+			o, ok := ledger.In[a.ID]
+			if !ok {
+				if o, ok = ledger.Out[a.ID]; !ok {
+					continue
+				}
+			}
+			other := ledger.ByID[o]
+			if names[other.SourceID] == "" {
+				names[other.SourceID] = other.SourceID
+				if s, err := e.Store.Source(ctx, other.SourceID); err == nil {
+					names[other.SourceID] = s.Name
+				}
+			}
+			from[a.ID] = names[other.SourceID]
+		}
 		for i := 0; i < len(pending); i += 200 {
 			chunk := pending[i:min(i+200, len(pending))]
-			results, err := d.Push(ctx, dest.Batch{SourceName: src.Name, Account: r.Account, Activities: chunk})
+			results, err := d.Push(ctx, dest.Batch{SourceName: src.Name, Account: r.Account, Activities: chunk, Costs: cost, Transfers: from})
 			now := e.Now()
 			var ds []store.Delivery
 			seen := map[string]bool{}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
+	"github.com/shopspring/decimal"
 )
 
 // Definition describes a kind of destination.
@@ -52,6 +53,12 @@ type Batch struct {
 	SourceName string
 	Account    string // Account.ID chosen for this source
 	Activities []model.Activity
+	// Costs: what an incoming asset cost, by activity id, in the account's
+	// currency (see model.Costs). Missing when no price is known.
+	Costs map[string]decimal.Decimal
+	// Transfers: for a deposit or withdrawal between two of your own
+	// accounts, the name of the source on the other side, by activity id.
+	Transfers map[string]string
 }
 
 // Destination is a configured target.

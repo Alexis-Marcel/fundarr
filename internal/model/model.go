@@ -97,6 +97,16 @@ const (
 	Fee Type = "fee"
 	// Tax: withholding or other tax taken by the platform.
 	Tax Type = "tax"
+	// Adjustment: a correction Fundarr makes when the history a platform
+	// gives does not add up to what it holds. Side In adds Base, Out removes
+	// it. NativeID starts with AdjustPrefix.
+	Adjustment Type = "adjustment"
+)
+
+// NativeID prefixes of activities that do not come from the platform.
+const (
+	AdjustPrefix = "adjust:" // written by Fundarr's balance check
+	ManualPrefix = "manual:" // entered by the user (a reclassified adjustment)
 )
 
 type Side string
@@ -104,6 +114,8 @@ type Side string
 const (
 	Buy  Side = "buy"
 	Sell Side = "sell"
+	In   Side = "in"  // adjustments only
+	Out  Side = "out" //
 )
 
 // Activity is one movement on one platform, as faithful to the source as
@@ -115,7 +127,7 @@ type Activity struct {
 	Account  string    `json:"account"`  // sub-account within the platform, "" for the main one
 	Time     time.Time `json:"time"`
 	Type     Type      `json:"type"`
-	Side     Side      `json:"side,omitempty"` // trades only
+	Side     Side      `json:"side,omitempty"` // trades (buy, sell) and adjustments (in, out)
 
 	Base  Amount  `json:"base"`            // the asset bought/sold/moved/received
 	Quote *Amount `json:"quote,omitempty"` // trades: what was paid or received in exchange
@@ -164,3 +176,25 @@ func PeggedTo(a Asset) string {
 
 // CashLike is true for fiat money and stablecoins: what assets are priced in.
 func CashLike(a Asset) bool { return a.Kind == Fiat || PeggedTo(a) != "" }
+
+// Inflow reports whether the activity brings its Base into the account.
+func (a Activity) Inflow() bool {
+	switch a.Type {
+	case Deposit, Reward, Dividend, Interest:
+		return true
+	case Adjustment:
+		return a.Side == In
+	}
+	return false
+}
+
+// Outflow reports whether the activity takes its Base out of the account.
+func (a Activity) Outflow() bool {
+	switch a.Type {
+	case Withdrawal, Fee, Tax:
+		return true
+	case Adjustment:
+		return a.Side == Out
+	}
+	return false
+}

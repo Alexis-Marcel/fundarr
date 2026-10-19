@@ -118,11 +118,26 @@ func instrument(a model.Asset) string {
 	return ""
 }
 
+// extra is what Fundarr knows about an activity beyond the activity itself.
+type extra struct {
+	cost    decimal.Decimal // what the incoming asset cost, in the account currency
+	hasCost bool
+	peer    string // the other side of a transfer between your accounts
+}
+
 // translate turns one activity into import rows. ccy is the account currency,
 // used for rows that move units rather than cash.
-func (w *Wealthfolio) translate(a model.Activity, account, ccy string) ([]row, error) {
+func (w *Wealthfolio) translate(a model.Activity, account, ccy string, x extra) ([]row, error) {
 	date := a.Time.UTC().Format(time.RFC3339)
 	comment := "fundarr:" + a.ID
+	switch {
+	case x.peer != "" && a.Inflow():
+		comment += " transfer from " + x.peer
+	case x.peer != "":
+		comment += " transfer to " + x.peer
+	case a.Type == model.Adjustment:
+		comment += " balance correction (Fundarr):"
+	}
 	if a.Note != "" {
 		comment += " " + a.Note
 	}
@@ -145,6 +160,8 @@ func (w *Wealthfolio) translate(a model.Activity, account, ccy string) ([]row, e
 		return r
 	}
 	// in/out moves an amount in or out of the account, as cash or as units.
+	// Units coming in are given their cost (Wealthfolio's cost basis) when
+	// Fundarr knows it.
 	move := func(in bool, amt model.Amount) row {
 		if w.cash(amt.Asset) != "" {
 			if in {
@@ -153,7 +170,11 @@ func (w *Wealthfolio) translate(a model.Activity, account, ccy string) ([]row, e
 			return cashRow("WITHDRAWAL", amt)
 		}
 		if in {
-			return unitsRow("TRANSFER_IN", amt)
+			r := unitsRow("TRANSFER_IN", amt)
+			if x.hasCost && amt.Qty.IsPositive() {
+				r.UnitPrice = num(x.cost.Div(amt.Qty))
+			}
+			return r
 		}
 		return unitsRow("TRANSFER_OUT", amt)
 	}
@@ -218,9 +239,11 @@ func (w *Wealthfolio) translate(a model.Activity, account, ccy string) ([]row, e
 		if w.cash(a.Base.Asset) != "" {
 			return []row{cashRow("INTEREST", a.Base)}, nil
 		}
-		// Units received for free. A STAKING_REWARD needs the market value,
-		// which sources do not give; the units arrive as a transfer.
-		return []row{unitsRow("TRANSFER_IN", a.Base)}, nil
+		// Units received for free arrive as a transfer, at their market value
+		// that day when Fundarr knows it.
+		return []row{move(true, a.Base)}, nil
+	case model.Adjustment:
+		return []row{move(a.Side == model.In, a.Base)}, nil
 	case model.Interest:
 		return []row{cashRow("INTEREST", a.Base)}, nil
 	case model.Dividend:
@@ -275,7 +298,9 @@ func (w *Wealthfolio) Push(ctx context.Context, b dest.Batch) ([]dest.Result, er
 	var rows []row
 	for i, a := range b.Activities {
 		results[i] = dest.Result{ActivityID: a.ID, Status: dest.Delivered}
-		rs, err := w.translate(a, b.Account, ccy)
+		x := extra{peer: b.Transfers[a.ID]}
+		x.cost, x.hasCost = b.Costs[a.ID]
+		rs, err := w.translate(a, b.Account, ccy, x)
 		if err != nil {
 			results[i] = dest.Result{ActivityID: a.ID, Status: dest.Skipped, Message: err.Error()}
 			continue

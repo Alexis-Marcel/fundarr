@@ -14,6 +14,7 @@ import (
 	"github.com/Alexis-Marcel/fundarr/internal/dest"
 	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
+	"github.com/shopspring/decimal"
 )
 
 var (
@@ -60,7 +61,7 @@ func TestTranslate(t *testing.T) {
 	w := &Wealthfolio{stableCash: true}
 	types := []string{}
 	for _, a := range activities() {
-		rows, err := w.translate(a, "acc", "EUR")
+		rows, err := w.translate(a, "acc", "EUR", extra{})
 		if a.Type == "weird" {
 			if err == nil {
 				t.Fatal("unknown type must fail")
@@ -101,22 +102,38 @@ func TestTranslate(t *testing.T) {
 	}
 	// Fee in quote is a fee; fee in base reduces units and raises the price.
 	acts := activities()
-	r, _ := w.translate(acts[2], "acc", "EUR")
+	r, _ := w.translate(acts[2], "acc", "EUR", extra{})
 	if *r[0].Fee != 0.8 || *r[0].UnitPrice != 40000 || *r[0].Quantity != 0.02 {
 		t.Fatalf("fee in quote %+v", r[0])
 	}
-	r, _ = w.translate(acts[3], "acc", "EUR")
+	r, _ = w.translate(acts[3], "acc", "EUR", extra{})
 	if r[0].Fee != nil || *r[0].Quantity != 0.0999 || *r[0].UnitPrice < 2502.5 || *r[0].UnitPrice > 2502.6 {
 		t.Fatalf("fee in base %+v", r[0])
 	}
 	// Stablecoins as crypto: a USDT purchase is crypto for crypto.
 	w.stableCash = false
-	r, _ = w.translate(acts[2], "acc", "EUR")
+	r, _ = w.translate(acts[2], "acc", "EUR", extra{})
 	if r[0].ActivityType != "TRANSFER_OUT" || r[0].Symbol != "USDT" {
 		t.Fatalf("stable as crypto %+v", r)
 	}
-	if _, err := w.translate(model.Activity{Type: model.Trade, Base: model.Amt(btc, "1")}, "a", "EUR"); err == nil {
+	if _, err := w.translate(model.Activity{Type: model.Trade, Base: model.Amt(btc, "1")}, "a", "EUR", extra{}); err == nil {
 		t.Fatal("trade without quote")
+	}
+	// Known costs become the cost basis of incoming units; transfers say
+	// where they come from; corrections say what they are.
+	w.stableCash = true
+	r, _ = w.translate(acts[6], "acc", "EUR", extra{cost: decimal.RequireFromString("550"), hasCost: true, peer: "Ledger"})
+	if *r[0].UnitPrice != 550 || !strings.Contains(r[0].Comment, "transfer from Ledger") {
+		t.Fatalf("paired deposit %+v", r[0])
+	}
+	r, _ = w.translate(acts[5], "acc", "EUR", extra{cost: decimal.RequireFromString("100"), hasCost: true})
+	if r[1].ActivityType != "TRANSFER_IN" || *r[1].UnitPrice != 200 {
+		t.Fatalf("swap cost %+v", r[1])
+	}
+	adj := model.Activity{ID: "x", Type: model.Adjustment, Side: model.Out, Base: model.Amt(btc, "0.1"), Note: "gone"}
+	r, _ = w.translate(adj, "acc", "EUR", extra{})
+	if len(r) != 1 || r[0].ActivityType != "TRANSFER_OUT" || !strings.Contains(r[0].Comment, "balance correction") {
+		t.Fatalf("correction %+v", r)
 	}
 }
 

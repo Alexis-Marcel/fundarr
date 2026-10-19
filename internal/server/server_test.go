@@ -230,7 +230,7 @@ func TestSourcesDestinationsRoutes(t *testing.T) {
 
 	var list []map[string]any
 	do(t, c, "GET", ts.URL+"/api/sources", nil, &list)
-	if len(list) != 1 || list[0]["activities"].(float64) != 1 || list[0]["secretsSet"].([]any)[0] != "key" || len(list[0]["gaps"].([]any)) != 1 {
+	if len(list) != 1 || list[0]["activities"].(float64) != 1 || list[0]["secretsSet"].([]any)[0] != "key" || list[0]["gaps"] != nil || list[0]["corrections"].(float64) != 1 {
 		t.Fatalf("list %v", list)
 	}
 	var acts struct {
@@ -238,15 +238,67 @@ func TestSourcesDestinationsRoutes(t *testing.T) {
 		Total      int              `json:"total"`
 	}
 	do(t, c, "GET", ts.URL+"/api/sources/"+id+"/activities?limit=5", nil, &acts)
-	if acts.Total != 1 || len(acts.Activities) != 1 {
+	if acts.Total != 2 || len(acts.Activities) != 2 { // with the correction
 		t.Fatalf("activities %+v", acts)
 	}
 	var hold struct {
 		Holdings []map[string]any `json:"holdings"`
 	}
 	do(t, c, "GET", ts.URL+"/api/sources/"+id+"/holdings", nil, &hold)
-	if len(hold.Holdings) != 1 || hold.Holdings[0]["replayed"] != "1" || hold.Holdings[0]["reported"] != "2" || hold.Holdings[0]["gap"] != true {
+	if len(hold.Holdings) != 1 || hold.Holdings[0]["replayed"] != "1" || hold.Holdings[0]["correction"] != "1" || hold.Holdings[0]["reported"] != "2" || hold.Holdings[0]["gap"] != false {
 		t.Fatalf("holdings %+v", hold)
+	}
+	// The correction, then what it really was.
+	var adjs []map[string]any
+	do(t, c, "GET", ts.URL+"/api/sources/"+id+"/adjustments", nil, &adjs)
+	if len(adjs) != 1 || adjs[0]["side"] != "in" || adjs[0]["delivered"] != false || adjs[0]["currency"] != "EUR" {
+		t.Fatalf("adjustments %+v", adjs)
+	}
+	aid := adjs[0]["id"].(string)
+	var e2 map[string]string
+	if code := do(t, c, "POST", ts.URL+"/api/sources/"+id+"/adjustments/"+aid, map[string]any{"as": "withdrawal"}, &e2); code != 422 {
+		t.Fatalf("coins in cannot be a withdrawal: %d %v", code, e2)
+	}
+	var manual model.Activity
+	if code := do(t, c, "POST", ts.URL+"/api/sources/"+id+"/adjustments/"+aid, map[string]any{"as": "reward", "note": "airdrop"}, &manual); code != 200 || manual.Type != model.Reward {
+		t.Fatalf("reclassify %d %+v", code, manual)
+	}
+	do(t, c, "GET", ts.URL+"/api/sources/"+id+"/adjustments", nil, &adjs)
+	if len(adjs) != 0 {
+		t.Fatalf("after %+v", adjs)
+	}
+	if code := do(t, c, "DELETE", ts.URL+"/api/sources/"+id+"/activities/"+manual.ID, map[string]any{}, nil); code != 200 {
+		t.Fatalf("delete manual %d", code)
+	}
+	do(t, c, "GET", ts.URL+"/api/sources/"+id+"/adjustments", nil, &adjs)
+	if len(adjs) != 1 {
+		t.Fatalf("correction back %+v", adjs)
+	}
+	// Turning corrections off leaves the gap shown.
+	no := false
+	do(t, c, "PUT", ts.URL+"/api/sources/"+id, map[string]any{"adjust": &no}, &src)
+	if src["adjust"] != false || src["corrections"].(float64) != 0 || len(src["gaps"].([]any)) != 1 {
+		t.Fatalf("off %v", src)
+	}
+	yes := true
+	do(t, c, "PUT", ts.URL+"/api/sources/"+id, map[string]any{"adjust": &yes}, &src)
+	if src["adjust"] != true || src["corrections"].(float64) != 1 {
+		t.Fatalf("on %v", src)
+	}
+	// Settings and transfers.
+	var set map[string]any
+	if code := do(t, c, "PUT", ts.URL+"/api/settings", map[string]any{"currency": "usd"}, &set); code != 200 || set["currency"] != "USD" {
+		t.Fatalf("settings %d %v", code, set)
+	}
+	if code := do(t, c, "PUT", ts.URL+"/api/settings", map[string]any{"currency": "XYZ"}, nil); code != 422 {
+		t.Fatal("bad currency")
+	}
+	var tr map[string]any
+	if code := do(t, c, "GET", ts.URL+"/api/transfers", nil, &tr); code != 200 || len(tr["pairs"].([]any)) != 0 || tr["currency"] != "USD" {
+		t.Fatalf("transfers %d %v", code, tr)
+	}
+	if code := do(t, c, "PUT", ts.URL+"/api/transfers", map[string]any{"outId": "a", "inId": "b", "kind": "pair"}, nil); code != 422 {
+		t.Fatal("unknown activities cannot be paired")
 	}
 	// Update keeps the secret when left empty; disabling without values.
 	if code := do(t, c, "PUT", ts.URL+"/api/sources/"+id, map[string]any{"name": "Renamed", "values": map[string]string{"key": ""}, "intervalMinutes": 5}, &src); code != 200 {

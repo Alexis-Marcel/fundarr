@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
+	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
 	"github.com/Alexis-Marcel/fundarr/internal/server"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
@@ -98,6 +99,7 @@ func run(log *slog.Logger) error {
 	defer stop()
 
 	eng := engine.New(st, box, log)
+	eng.Prices = price.New(st, &http.Client{Timeout: 30 * time.Second})
 	// Like the *arr apps: a username and password created on first launch,
 	// unless single sign-on or a proxy is configured.
 	mode := env("FUNDARR_AUTH", "")
