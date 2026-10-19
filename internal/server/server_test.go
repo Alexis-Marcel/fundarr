@@ -484,3 +484,63 @@ func TestSecretListsKeepLabels(t *testing.T) {
 		t.Errorf("rename %q %v", got, err)
 	}
 }
+
+func TestReadAPIWithToken(t *testing.T) {
+	ts, eng, c := setup(t, "password")
+	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"username": "admin", "password": "correct horse"}, nil); code != 200 {
+		t.Fatalf("login %d", code)
+	}
+	var src map[string]any
+	do(t, c, "POST", ts.URL+"/api/sources", map[string]any{"kind": "test", "name": "T", "values": map[string]string{"key": "good"}}, &src)
+	waitIdle(t, eng, src["id"].(string))
+	var made struct {
+		Token string `json:"token"`
+		Info  struct {
+			ID string `json:"id"`
+		} `json:"info"`
+	}
+	if code := do(t, c, "POST", ts.URL+"/api/tokens", map[string]string{"name": "script"}, &made); code != 200 || !strings.HasPrefix(made.Token, "fdr_") {
+		t.Fatalf("token %d %+v", code, made)
+	}
+	// A program without a session: the token, and only for /api/v1 reads.
+	get := func(path, token string) (*http.Response, string) {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	if r, _ := get("/api/v1/activities", ""); r.StatusCode != 401 {
+		t.Fatalf("no token %d", r.StatusCode)
+	}
+	if r, _ := get("/api/v1/activities", "fdr_nope"); r.StatusCode != 401 {
+		t.Fatalf("bad token %d", r.StatusCode)
+	}
+	if r, _ := get("/api/sources", made.Token); r.StatusCode != 401 {
+		t.Fatalf("token outside v1 %d", r.StatusCode)
+	}
+	r, body := get("/api/v1/activities?limit=1", made.Token)
+	if r.StatusCode != 200 || !strings.Contains(body, `"source":{"id"`) || !strings.Contains(body, `"next":"`) {
+		t.Fatalf("activities %d %s", r.StatusCode, body)
+	}
+	r, body = get("/api/v1/activities.csv?format=koinly", made.Token)
+	if r.StatusCode != 200 || !strings.HasPrefix(body, "Date,Sent Amount,Sent Currency") {
+		t.Fatalf("koinly %d %s", r.StatusCode, body)
+	}
+	if r, body = get("/api/v1/holdings", made.Token); r.StatusCode != 200 || !strings.Contains(body, `"balances"`) {
+		t.Fatalf("holdings %d %s", r.StatusCode, body)
+	}
+	// Revoked, it stops working.
+	if code := do(t, c, "DELETE", ts.URL+"/api/tokens/"+made.Info.ID, map[string]string{}, nil); code != 200 {
+		t.Fatalf("revoke %d", code)
+	}
+	if r, _ := get("/api/v1/sources", made.Token); r.StatusCode != 401 {
+		t.Fatalf("revoked %d", r.StatusCode)
+	}
+}

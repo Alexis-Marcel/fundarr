@@ -5,10 +5,14 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/model"
@@ -123,6 +127,13 @@ CREATE INDEX IF NOT EXISTS price_windows_pair ON price_windows(pair);
 CREATE TABLE IF NOT EXISTS settings (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS api_tokens (
+	id        TEXT PRIMARY KEY,
+	name      TEXT NOT NULL,
+	hash      TEXT NOT NULL UNIQUE, -- sha256 of the token: the token itself is never stored
+	created   INTEGER NOT NULL,
+	last_used INTEGER
 );
 `
 
@@ -870,4 +881,70 @@ func (s *Store) Runs(ctx context.Context, subject string, limit int) ([]Run, err
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ---- API tokens
+
+// APIToken lets another program read Fundarr's data (the /api/v1 routes).
+type APIToken struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Created  time.Time `json:"created"`
+	LastUsed time.Time `json:"lastUsed"`
+}
+
+func tokenHash(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+// CreateAPIToken makes a token and returns it: this is the only time it
+// can be read.
+func (s *Store) CreateAPIToken(ctx context.Context, name string) (APIToken, string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return APIToken{}, "", err
+	}
+	token := "fdr_" + hex.EncodeToString(b)
+	t := APIToken{ID: hex.EncodeToString(b[:6]), Name: name, Created: s.Clock().UTC()}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO api_tokens (id, name, hash, created) VALUES (?, ?, ?, ?)`,
+		t.ID, t.Name, tokenHash(token), ms(t.Created))
+	return t, token, err
+}
+
+func (s *Store) APITokens(ctx context.Context) ([]APIToken, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created, last_used FROM api_tokens ORDER BY created`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []APIToken{}
+	for rows.Next() {
+		var t APIToken
+		var created, used sql.NullInt64
+		if err := rows.Scan(&t.ID, &t.Name, &created, &used); err != nil {
+			return nil, err
+		}
+		t.Created, t.LastUsed = fromMs(created), fromMs(used)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteAPIToken(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM api_tokens WHERE id = ?`, id)
+	return err
+}
+
+// CheckAPIToken says whether token is a live one, and marks it used.
+func (s *Store) CheckAPIToken(ctx context.Context, token string) bool {
+	if !strings.HasPrefix(token, "fdr_") {
+		return false
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET last_used = ? WHERE hash = ?`, ms(s.Clock()), tokenHash(token))
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
 }

@@ -110,6 +110,15 @@ func (s *Server) routes() {
 	api("GET /api/transfers", s.transfers)
 	api("PUT /api/transfers", s.putTransfer)
 	api("GET /api/settings", s.getSettings)
+	api("GET /api/tokens", s.listTokens)
+	api("POST /api/tokens", s.createToken)
+	api("DELETE /api/tokens/{id}", s.deleteToken)
+	// The stable read API: a session or an API token.
+	read := func(pattern string, h http.HandlerFunc) { m.HandleFunc(pattern, s.reader(h)) }
+	read("GET /api/v1/sources", s.v1Sources)
+	read("GET /api/v1/activities", s.v1Activities)
+	read("GET /api/v1/activities.csv", s.v1CSV)
+	read("GET /api/v1/holdings", s.v1Holdings)
 	api("PUT /api/settings", s.putSettings)
 	m.HandleFunc("/", s.static)
 }

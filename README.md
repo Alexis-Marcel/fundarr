@@ -40,6 +40,10 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 
 Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)), Solana, Ghostfolio, CSV. Adding one is a single Go package; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Read API
+
+Other apps and scripts can read every activity, with costs and transfers worked out, through a token-protected read API, or download it as CSV (Fundarr or Koinly format). See [docs/api.md](docs/api.md).
+
 ## Run it
 
 ```sh

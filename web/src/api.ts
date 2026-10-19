@@ -203,6 +203,13 @@ export interface ImportResult {
   gaps: Gap[] | null;
 }
 
+export interface APIToken {
+  id: string;
+  name: string;
+  created: string;
+  lastUsed: string;
+}
+
 export interface Session {
   user: string;
   mode: "oidc" | "password" | "proxy" | "none";
@@ -259,6 +266,9 @@ export const api = {
   createSource: (in_: EntityInput) => call<Source>("POST", "/api/sources", in_),
   preview: (kind: string, value: string, sourceId?: string) =>
     call<{ balances: Balance[] }>("POST", `/api/kinds/${kind}/preview`, { value, sourceId }),
+  tokens: () => call<APIToken[]>("GET", "/api/tokens"),
+  createToken: (name: string) => call<{ token: string; info: APIToken }>("POST", "/api/tokens", { name }),
+  deleteToken: (id: string) => call<{ ok: boolean }>("DELETE", `/api/tokens/${id}`, {}),
   detect: (kind: string, value: string) => call<Detected>("POST", `/api/kinds/${kind}/detect`, { value }),
   testSource: (in_: EntityInput & { id?: string }) => call<{ ok: boolean }>("POST", "/api/sources/test", in_),
   updateSource: (id: string, in_: EntityInput) => call<Source>("PUT", `/api/sources/${id}`, in_),
