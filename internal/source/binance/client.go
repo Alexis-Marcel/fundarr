@@ -25,6 +25,12 @@ type client struct {
 	http   *http.Client
 	// pause between calls, to stay far below rate limits.
 	pause time.Duration
+	// slow paths cost so much weight that they need their own spacing
+	// (fiat history: 45000 UID weight a call, 180000 a minute).
+	slow     map[string]time.Duration
+	lastSlow map[string]time.Time
+	// onWait reports a rate-limit wait, for the run log.
+	onWait func(path string, d time.Duration)
 	// sleep is time.Sleep with a context; replaced in tests.
 	sleep func(context.Context, time.Duration) error
 
@@ -104,8 +110,19 @@ func (c *client) post(ctx context.Context, path string, q url.Values, out any) e
 func (c *client) do(ctx context.Context, method, path string, q url.Values, signed bool, out any) error {
 	for attempt := 0; ; attempt++ {
 		retry, err := c.once(ctx, method, path, q, signed, out)
-		if err == nil || retry <= 0 || attempt >= 4 {
+		if err == nil || retry <= 0 || attempt >= 5 {
 			return err
+		}
+		// Binance often sends no Retry-After for account (UID) limits: back
+		// off for real, longer each time.
+		if min := time.Duration(attempt+1) * 20 * time.Second; retry < min {
+			retry = min
+		}
+		if retry > 2*time.Minute {
+			retry = 2 * time.Minute
+		}
+		if c.onWait != nil {
+			c.onWait(path, retry)
 		}
 		if err := c.sleep(ctx, retry); err != nil {
 			return err
@@ -117,6 +134,11 @@ func (c *client) do(ctx context.Context, method, path string, q url.Values, sign
 func (c *client) once(ctx context.Context, method, path string, q url.Values, signed bool, out any) (time.Duration, error) {
 	c.mu.Lock()
 	wait := c.pause - time.Since(c.last)
+	if gap, ok := c.slow[path]; ok {
+		if w := gap - time.Since(c.lastSlow[path]); w > wait {
+			wait = w
+		}
+	}
 	c.mu.Unlock()
 	if err := c.sleep(ctx, wait); err != nil {
 		return 0, err
@@ -149,6 +171,12 @@ func (c *client) once(ctx context.Context, method, path string, q url.Values, si
 	resp, err := c.http.Do(req)
 	c.mu.Lock()
 	c.last = time.Now()
+	if _, ok := c.slow[path]; ok {
+		if c.lastSlow == nil {
+			c.lastSlow = map[string]time.Time{}
+		}
+		c.lastSlow[path] = c.last
+	}
 	c.mu.Unlock()
 	if err != nil {
 		return 0, err

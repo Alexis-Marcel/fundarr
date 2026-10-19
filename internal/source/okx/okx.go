@@ -50,7 +50,7 @@ func init() {
 			{Name: "api_secret", Label: "Secret key", Secret: true},
 			{Name: "passphrase", Label: "Passphrase", Secret: true},
 			{Name: "base_url", Label: "API domain", Optional: true,
-				Help: "leave empty (https://www.okx.com); for tests or regional domains like my.okx.com / app.okx.com"},
+				Help: "leave empty: Fundarr finds the right one (www.okx.com, eea.okx.com for European accounts, us.okx.com)"},
 		},
 		Setup: "In OKX, open Profile → API keys → Create API key (API v5). Tick only the \"Read\" permission: " +
 			"no Trade, no Withdraw. Restrict it to your server's IP address if you can. Copy the API key, " +
@@ -72,6 +72,7 @@ func New(cfg source.Config) (source.Source, error) {
 	}
 	if c.base == "" {
 		c.base = defaultBase
+		c.auto = true
 	} else if !strings.HasPrefix(c.base, "http") {
 		c.base = "https://" + c.base
 	}
@@ -113,8 +114,15 @@ func (s *Source) State() []byte {
 
 // ---- HTTP client
 
+// OKX serves each region from its own domain; a key made on one does not
+// exist on the others (code 50119). Without a configured domain, the client
+// tries them in turn.
+var regionBases = []string{"https://eea.okx.com", "https://us.okx.com"}
+
 type client struct {
 	base, key, secret, pass string
+	auto                    bool // base not configured: may switch region
+	tried                   int  // regions tried so far
 	http                    *http.Client
 	now                     func() time.Time
 	sleep                   func(context.Context, time.Duration) error
@@ -203,6 +211,14 @@ func (c *client) do(ctx context.Context, method, path string, q url.Values, body
 		}
 		if jsonErr != nil {
 			return fmt.Errorf("okx %s: HTTP %d: %s", path, resp.StatusCode, snippet(raw))
+		}
+		if env.Code == "50119" && c.auto && c.tried < len(regionBases) {
+			c.base = regionBases[c.tried]
+			c.tried++
+			continue
+		}
+		if env.Code == "50119" && c.auto {
+			return &APIError{Code: env.Code, Path: path, Msg: "this API key exists on none of OKX's domains (www, eea, us): check it was copied whole and is not a demo-trading key"}
 		}
 		if env.Code != "0" {
 			return &APIError{Code: env.Code, Msg: env.Msg, Path: path}

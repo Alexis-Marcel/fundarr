@@ -615,7 +615,7 @@ func TestTestAndErrors(t *testing.T) {
 	}
 	found := false
 	for _, d := range slept {
-		if d == time.Second { // Retry-After 0 + 1s margin
+		if d == 20*time.Second { // no usable Retry-After: at least 20 s
 			found = true
 		}
 	}
@@ -668,23 +668,17 @@ func TestTestAndErrors(t *testing.T) {
 	defer srv.Close()
 	b.c.base = srv.URL
 	slept = nil
-	waits := 0
-	for _, d := range slept {
-		if d == 3*time.Second {
-			waits++
-		}
-	}
+	var waits []time.Duration
+	b.c.onWait = func(_ string, d time.Duration) { waits = append(waits, d) }
 	if err := b.c.get(ctx, "/x", nil, nil); err == nil {
 		t.Fatal("418 forever must fail")
 	}
-	for _, d := range slept {
-		if d == 3*time.Second {
-			waits++
-		}
+	// Growing waits, at least the server's Retry-After, then give up.
+	want := []time.Duration{20 * time.Second, 40 * time.Second, time.Minute, 80 * time.Second, 100 * time.Second}
+	if fmt.Sprint(waits) != fmt.Sprint(want) {
+		t.Fatalf("418 retries: %v", waits)
 	}
-	if waits != 4 {
-		t.Fatalf("418 retries: %v", slept)
-	}
+	b.c.onWait = nil
 	// Non-JSON error bodies and undecodable answers.
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/bad" {
@@ -730,5 +724,75 @@ func TestHelpers(t *testing.T) {
 	}
 	if sleepCtx(context.Background(), time.Millisecond) != nil {
 		t.Fatal("sleep")
+	}
+}
+
+// Fiat history: one wide range first, windows if Binance refuses it; a
+// failing section does not stop the others; costly paths are spaced.
+func TestFiatRangeFallbackAndPartialFailure(t *testing.T) {
+	var ranges []string
+	var fiatCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch r.URL.Path {
+		case "/sapi/v1/fiat/orders":
+			fiatCalls++
+			ranges = append(ranges, q.Get("beginTime")+"-"+q.Get("endTime"))
+			if len(ranges) == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"code":-1127,"msg":"More than 90 days"}`)
+				return
+			}
+			fmt.Fprint(w, `{"code":"000000","message":"success","data":[],"total":0,"success":true}`)
+		case "/sapi/v1/capital/deposit/hisrec":
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"code":-1000,"msg":"boom"}`)
+		case "/api/v3/time":
+			fmt.Fprintf(w, `{"serverTime":%d}`, time.Now().UnixMilli())
+		default:
+			if strings.HasPrefix(r.URL.Path, "/sapi/v1/fiat/payments") {
+				fmt.Fprint(w, `{"code":"000000","message":"success","data":[],"total":0,"success":true}`)
+				return
+			}
+			fmt.Fprint(w, `[]`)
+		}
+	}))
+	defer srv.Close()
+	def, _ := source.Get("binance")
+	s, err := def.New(source.Config{Values: map[string]string{"api_key": "k", "api_secret": testSecret, "base_url": srv.URL}, HTTP: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := s.(*Binance)
+	b.c.pause = 0
+	var slept []time.Duration
+	b.c.sleep = func(ctx context.Context, d time.Duration) error {
+		if d > 0 {
+			slept = append(slept, d)
+		}
+		return nil
+	}
+	b.now = func() time.Time { return time.Date(2018, 3, 1, 0, 0, 0, 0, time.UTC) }
+	var logs []string
+	err = b.Activities(context.Background(), source.Fetch{
+		Since:    time.Date(2018, 1, 1, 0, 0, 0, 0, time.UTC),
+		Emit:     func(model.Activity) error { return nil },
+		Progress: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "deposits") || strings.Contains(err.Error(), "fiat") {
+		t.Fatalf("only deposits fail: %v", err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "spot trades") {
+		t.Fatal("later sections still run")
+	}
+	// First call: the whole range (refused), then windows; each costly
+	// call waits for its spacing.
+	if fiatCalls < 3 || len(slept) == 0 {
+		t.Fatalf("fiat calls %d, waits %v", fiatCalls, slept)
+	}
+	for _, d := range slept {
+		if d > 16*time.Second {
+			t.Fatalf("spacing %v", d)
+		}
 	}
 }
