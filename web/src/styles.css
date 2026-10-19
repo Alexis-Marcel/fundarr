@@ -823,3 +823,47 @@ input[type="date"] {
 .narrow {
   max-width: 380px;
 }
+
+/* ---- source figures */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin: 0 0 1.5rem;
+}
+.stats > div {
+  background: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-m);
+  padding: 0.75rem 0.9rem;
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.stats dt {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.stats dd {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stats small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 760px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

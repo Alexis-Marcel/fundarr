@@ -84,13 +84,22 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 		c.mu.Lock()
 		c.last = time.Now()
 		c.mu.Unlock()
-		if err != nil {
-			return fmt.Errorf("esplora: %w", err)
+		var body []byte
+		if err == nil {
+			body, err = io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+			resp.Body.Close()
 		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-		resp.Body.Close()
 		if err != nil {
-			return err
+			// Timeouts and dropped connections are common on public servers:
+			// retry them like a rate limit, unless the run was cancelled.
+			if ctx.Err() == nil && attempt < 5 {
+				if err := c.sleep(ctx, backoff); err != nil {
+					return err
+				}
+				backoff *= 2
+				continue
+			}
+			return fmt.Errorf("esplora: %w", err)
 		}
 		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500) && attempt < 5 {
 			if err := c.sleep(ctx, backoff); err != nil {

@@ -308,13 +308,28 @@ func (c *client) get(ctx context.Context, ch Chain, q url.Values, out any) error
 		c.mu.Lock()
 		c.last = time.Now()
 		c.mu.Unlock()
-		if err != nil {
-			return err
+		var body []byte
+		if err == nil {
+			body, err = io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+			resp.Body.Close()
 		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-		resp.Body.Close()
-		if err != nil {
-			return err
+		if err != nil || resp.StatusCode >= 500 {
+			// Timeouts, dropped connections and server errors: retry. The
+			// URL may carry the API key, so it never goes into the message.
+			if ctx.Err() == nil && attempt < 5 {
+				if err := c.sleep(ctx, backoff); err != nil {
+					return err
+				}
+				backoff *= 2
+				continue
+			}
+			if err != nil {
+				var ue *url.Error
+				if errors.As(err, &ue) {
+					err = ue.Err
+				}
+				return fmt.Errorf("%s %s: %v", ch.Name, q.Get("action"), err)
+			}
 		}
 		var env envelope
 		jsonErr := json.Unmarshal(body, &env)
