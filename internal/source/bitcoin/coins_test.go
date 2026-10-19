@@ -190,3 +190,27 @@ func TestSingleAddress(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestPlainXpubScansUsedFormatsOnly(t *testing.T) {
+	f, srv, _ := setup(t)
+	xpub := reversion(zpub84, verXpub)
+	s, err := NewCoin(Bitcoin, source.Config{Values: map[string]string{"xpub": xpub, "esplora_url": srv.URL}, HTTP: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := s.(*Wallet)
+	b.c.pause = 0
+	bal, err := b.Balances(context.Background())
+	if err != nil || len(bal) != 1 {
+		t.Fatalf("balances %+v %v", bal, err)
+	}
+	// Only index 0 of the unused formats was asked.
+	k, _, _ := Bitcoin.parseKey(xpub)
+	for _, typ := range []scriptType{p2tr, p2shP2wpkh, p2pkh} {
+		a1, _ := Bitcoin.derive(k, typ, 0, 1)
+		a0, _ := Bitcoin.derive(k, typ, 0, 0)
+		if f.calls["/address/"+a1] != 0 || f.calls["/address/"+a0] != 1 {
+			t.Errorf("%s scanned", typ)
+		}
+	}
+}

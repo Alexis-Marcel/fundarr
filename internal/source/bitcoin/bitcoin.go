@@ -203,8 +203,12 @@ func (b *Wallet) scan(ctx context.Context, progress func(string, ...any)) (*scan
 		b.scanned = s
 		return s, nil
 	}
+	types, err := b.activeTypes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	total := 0
-	for _, t := range b.types {
+	for _, t := range types {
 		for chain := uint32(0); chain <= 1; chain++ {
 			gap := 0
 			// Addresses are asked GapLimit at a time, in parallel; the gap
@@ -243,6 +247,38 @@ func (b *Wallet) scan(ctx context.Context, progress func(string, ...any)) (*scan
 	}
 	b.scanned = s
 	return s, nil
+}
+
+// activeTypes keeps the address formats the account used. Wallets start
+// at index 0, so a format whose first receive and change addresses never
+// saw a transaction was never used: a plain xpub (the four formats) costs
+// eight requests to sort out instead of four full scans.
+func (b *Wallet) activeTypes(ctx context.Context) ([]scriptType, error) {
+	if len(b.types) == 1 {
+		return b.types, nil
+	}
+	var addrs []string
+	for _, t := range b.types {
+		for chain := uint32(0); chain <= 1; chain++ {
+			a, err := b.coin.derive(b.key, t, chain, 0)
+			if err != nil {
+				return nil, err
+			}
+			addrs = append(addrs, a)
+		}
+	}
+	stats, err := b.c.addresses(ctx, addrs)
+	if err != nil {
+		return nil, err
+	}
+	var out []scriptType
+	for i, t := range b.types {
+		r, c := stats[2*i], stats[2*i+1]
+		if r.Chain.TxCount+r.Mempool.TxCount+c.Chain.TxCount+c.Mempool.TxCount > 0 {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // ---- activities
