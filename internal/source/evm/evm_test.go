@@ -33,11 +33,12 @@ type row = map[string]string
 
 // fake serves Blockscout-shaped answers per network (and Etherscan v2).
 type fake struct {
-	mu       sync.Mutex
-	rows     map[string]map[string][]row  // chain → action → rows
-	balances map[string]map[string]string // chain → contract ("" native) → raw
-	calls    []string
-	limitOne bool
+	mu          sync.Mutex
+	rows        map[string]map[string][]row  // chain → action → rows
+	balances    map[string]map[string]string // chain → contract ("" native) → raw
+	calls       []string
+	limitOne    bool
+	freeRefused int
 }
 
 func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -52,10 +53,18 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				chain = c.Name
 			}
 		}
-		if q.Get("apikey") != "KEY" {
+		if q.Get("apikey") == "FREE" && chain == "base" {
+			f.freeRefused++
+			fmt.Fprint(w, `{"status":"0","message":"NOTOK","result":"Free API access is not supported for this chain. Please upgrade your api plan for full chain coverage. https://etherscan.io/apis"}`)
+			return
+		}
+		if q.Get("apikey") != "KEY" && q.Get("apikey") != "FREE" {
 			fmt.Fprint(w, `{"status":"0","message":"NOTOK","result":"Invalid API Key"}`)
 			return
 		}
+	} else if q.Get("apikey") != "" {
+		http.Error(w, "the key must not reach a free explorer", 400)
+		return
 	}
 	f.calls = append(f.calls, chain+":"+q.Get("action")+":"+q.Get("startblock")+":"+q.Get("page"))
 	if f.limitOne {
@@ -314,6 +323,11 @@ func TestEtherscanV2(t *testing.T) {
 	if !strings.HasPrefix(f.calls[0], "base:") {
 		t.Fatalf("chainid routing %v", f.calls)
 	}
+	// A free key does not cover base: its free explorer answers, once refused.
+	free := connect(t, srv, map[string]string{"chains": "base", "etherscan_key": "FREE"}, nil)
+	if acts, _ := fetch(t, free); len(acts) != 1 || f.freeRefused != 1 {
+		t.Fatalf("free plan fallback %+v %d", acts, f.freeRefused)
+	}
 	bad := connect(t, srv, map[string]string{"chains": "base", "etherscan_key": "nope"}, nil)
 	if err := bad.Test(context.Background()); err == nil || !strings.Contains(err.Error(), "Invalid API Key") {
 		t.Fatalf("bad key: %v", err)
@@ -409,5 +423,29 @@ func TestSpam(t *testing.T) {
 	}
 	if ascii("Ｕ SDT") || !ascii("USDT") {
 		t.Error("ascii")
+	}
+}
+
+func TestKeyOnlyNetworks(t *testing.T) {
+	addr := "0x52908400098527886e0f7030069857d2e4169ee7"
+	s, err := New(source.Config{Values: map[string]string{"address": addr, "chains": "all"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.(*Source).chains {
+		if c.Name == "bsc" {
+			t.Error("bsc read without a key")
+		}
+	}
+	if _, err := New(source.Config{Values: map[string]string{"address": addr, "chains": "bsc"}}); err == nil || !strings.Contains(err.Error(), "Etherscan") {
+		t.Errorf("bsc without key: %v", err)
+	}
+	s, _ = New(source.Config{Values: map[string]string{"address": addr, "chains": "all", "etherscan_key": "K"}})
+	found := false
+	for _, c := range s.(*Source).chains {
+		found = found || c.Name == "bsc"
+	}
+	if !found {
+		t.Error("bsc must be read with a key")
 	}
 }
