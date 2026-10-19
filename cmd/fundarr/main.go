@@ -28,6 +28,7 @@ import (
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/binance"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/bitcoin"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/bitpanda"
+	_ "github.com/Alexis-Marcel/fundarr/internal/source/coinbase"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/evm"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/kraken"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/okx"
