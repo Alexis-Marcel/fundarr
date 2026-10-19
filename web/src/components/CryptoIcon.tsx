@@ -35,3 +35,13 @@ export function CryptoIcon({ symbol, kind, size = 22 }: { symbol?: string; kind?
     </span>
   );
 }
+
+/** An asset as shown in tables: its icon, then its symbol. */
+export function AssetName({ asset, size = 18 }: { asset: { kind: string; symbol: string; isin?: string }; size?: number }) {
+  return (
+    <span className="asset-name">
+      <CryptoIcon symbol={asset.symbol || asset.isin} size={size} />
+      <strong>{asset.symbol || asset.isin || "?"}</strong>
+    </span>
+  );
+}

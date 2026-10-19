@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, type Side, type Transfers } from "../api";
 import { assetLabel, dateTime, money, qty, usePoll } from "../lib";
+import { CryptoIcon } from "../components/CryptoIcon";
 
 const BY: Record<string, string> = {
   txid: "same transaction",
@@ -70,7 +71,10 @@ function Body({ data, reload }: { data: Transfers; reload: () => void }) {
             {data.pairs.map((p) => (
               <tr key={p.out.id + p.in.id}>
                 <td className="nowrap">
-                  <strong>{qty(p.in.base.qty)}</strong> {assetLabel(p.in.base.asset)}
+                  <span className="asset-line">
+                    <CryptoIcon symbol={p.in.base.asset.symbol} size={18} />
+                    <strong>{qty(p.in.base.qty)}</strong> {assetLabel(p.in.base.asset)}
+                  </span>
                 </td>
                 <td>{where(p.out)}</td>
                 <td>{where(p.in)}</td>
@@ -111,7 +115,10 @@ function Body({ data, reload }: { data: Transfers; reload: () => void }) {
             {data.unmatched.map((u) => (
               <tr key={u.out.id}>
                 <td className="nowrap">
-                  <strong>{qty(u.out.base.qty)}</strong> {assetLabel(u.out.base.asset)}
+                  <span className="asset-line">
+                    <CryptoIcon symbol={u.out.base.asset.symbol} size={18} />
+                    <strong>{qty(u.out.base.qty)}</strong> {assetLabel(u.out.base.asset)}
+                  </span>
                 </td>
                 <td>{where(u.out)}</td>
                 <td>

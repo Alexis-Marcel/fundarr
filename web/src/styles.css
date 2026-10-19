@@ -1085,3 +1085,10 @@ input[type="date"] {
 .advanced > .field + .field {
   margin-top: 1rem;
 }
+
+.asset-name,
+.asset-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
