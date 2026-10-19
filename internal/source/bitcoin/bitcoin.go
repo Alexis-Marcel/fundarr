@@ -90,7 +90,10 @@ func (c Coin) parseKey(s string) (*hdkeychain.ExtendedKey, []scriptType, error) 
 
 // Wallet is a configured account of a Coin.
 type Wallet struct {
-	coin  Coin
+	coin Coin
+	// addr: a wallet that uses one address only (Phantom, some mobile
+	// wallets) is read from it; key is nil then.
+	addr  string
 	key   *hdkeychain.ExtendedKey
 	types []scriptType
 	c     *client
@@ -109,12 +112,22 @@ type state struct {
 // New builds a Bitcoin wallet from its settings.
 func New(cfg source.Config) (source.Source, error) { return NewCoin(Bitcoin, cfg) }
 
-// NewCoin builds a wallet of any Coin: cfg "xpub" is the account key, and
-// "esplora_url" (Bitcoin and Litecoin) replaces the public servers.
+// NewCoin builds a wallet of any Coin: cfg "xpub" is the account key (or
+// "address" its only address), and "esplora_url" (Bitcoin and Litecoin)
+// replaces the public servers.
 func NewCoin(coin Coin, cfg source.Config) (source.Source, error) {
-	key, types, err := coin.parseKey(cfg.Get("xpub"))
-	if err != nil {
-		return nil, err
+	var key *hdkeychain.ExtendedKey
+	var types []scriptType
+	addr := strings.TrimSpace(cfg.Get("address"))
+	if addr != "" {
+		if !coin.ValidAddress(addr) {
+			return nil, fmt.Errorf("not a %s address", coin.Name)
+		}
+	} else {
+		var err error
+		if key, types, err = coin.parseKey(cfg.Get("xpub")); err != nil {
+			return nil, err
+		}
 	}
 	base := strings.TrimRight(strings.TrimSpace(cfg.Get("esplora_url")), "/")
 	var first server
@@ -131,7 +144,7 @@ func NewCoin(coin Coin, cfg source.Config) (source.Source, error) {
 	if hc == nil {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
-	b := &Wallet{coin: coin, key: key, types: types, now: time.Now,
+	b := &Wallet{coin: coin, addr: addr, key: key, types: types, now: time.Now,
 		c: &client{base: first.url, blockbook: first.blockbook, fallback: fallback, http: hc, pause: 120 * time.Millisecond, sleep: sleepCtx}}
 	if len(cfg.State) > 0 {
 		_ = json.Unmarshal(cfg.State, &b.st)
@@ -149,11 +162,14 @@ func (b *Wallet) State() []byte {
 
 // Test checks the key and that the Esplora API answers.
 func (b *Wallet) Test(ctx context.Context) error {
-	addr, err := b.coin.derive(b.key, b.types[0], 0, 0)
-	if err != nil {
-		return err
+	addr := b.addr
+	if b.key != nil {
+		var err error
+		if addr, err = b.coin.derive(b.key, b.types[0], 0, 0); err != nil {
+			return err
+		}
 	}
-	_, err = b.c.address(ctx, addr)
+	_, err := b.c.address(ctx, addr)
 	return err
 }
 
@@ -174,6 +190,18 @@ func (b *Wallet) scan(ctx context.Context, progress func(string, ...any)) (*scan
 		return b.scanned, nil
 	}
 	s := &scan{owned: map[string]bool{}}
+	if b.key == nil {
+		st, err := b.c.address(ctx, b.addr)
+		if err != nil {
+			return nil, err
+		}
+		s.owned[b.addr] = true
+		if st.Chain.TxCount > 0 || st.Mempool.TxCount > 0 {
+			s.used = append(s.used, used{addr: b.addr, stats: st})
+		}
+		b.scanned = s
+		return s, nil
+	}
 	total := 0
 	for _, t := range b.types {
 		for chain := uint32(0); chain <= 1; chain++ {

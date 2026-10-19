@@ -1,7 +1,11 @@
 package bitcoin
 
 import (
+	"strings"
+
 	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
@@ -69,6 +73,21 @@ var (
 		keys:    map[[4]byte][]scriptType{verXpub: {p2pkh}},
 		servers: []server{{url: "https://bchblockexplorer.com/api/v2", blockbook: true}}}
 )
+
+// ValidAddress reports whether a is one address of the coin (legacy,
+// nested or native segwit, taproot). Bitcoin Cash addresses are not read
+// alone: its wallets always give an extended public key.
+func (c Coin) ValidAddress(a string) bool {
+	if c.cashaddr {
+		return false
+	}
+	if c.params.Bech32HRPSegwit != "" && strings.HasPrefix(strings.ToLower(a), c.params.Bech32HRPSegwit+"1") {
+		d, err := btcutil.DecodeAddress(a, c.params)
+		return err == nil && d.IsForNet(c.params)
+	}
+	raw, ver, err := base58.CheckDecode(a)
+	return err == nil && len(raw) == 20 && (ver == c.params.PubKeyHashAddrID || ver == c.params.ScriptHashAddrID)
+}
 
 // cashAddr writes a pay-to-pubkey-hash in Bitcoin Cash's format.
 func cashAddr(hash []byte) string {
