@@ -168,3 +168,22 @@ func TestDetectTron(t *testing.T) {
 		t.Error("bad checksum accepted")
 	}
 }
+
+func TestDetectXRPAndCardano(t *testing.T) {
+	if d, err := Detect("rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De"); err != nil || d.Chain != "XRP" {
+		t.Errorf("xrp %+v %v", d, err)
+	}
+	if _, err := Detect("stake1uy"); err == nil {
+		t.Error("broken stake address accepted")
+	}
+}
+
+func TestDetectSolana(t *testing.T) {
+	if d, err := Detect("EB7KkCBCvAETtkPMU9a2zCwZK51az1V6hm7Bgs1Xeqfs"); err != nil || d.Chain != "Solana" {
+		t.Errorf("solana %+v %v", d, err)
+	}
+	// Tron and XRP addresses stay theirs.
+	if d, _ := Detect("TEgfk1gjsMdXZYm9743PWYuM6Fc5MGJYeq"); d.Chain != "Tron" {
+		t.Errorf("tron read as %s", d.Chain)
+	}
+}
