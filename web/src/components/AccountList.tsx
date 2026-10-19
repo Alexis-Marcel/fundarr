@@ -117,27 +117,17 @@ export function AccountList(p: Props) {
                       update((cur) => cur.map((x, j) => (j === i ? { ...x, label } : x)));
                     }}
                   />
-                  {it.choices && it.choices.length > 1 && (
-                    <select
-                      value={it.value}
-                      aria-label="Read this key as"
-                      onChange={(e) => {
-                        const c = it.choices!.find((c) => c.value === e.target.value)!;
-                        update((cur) => cur.map((x, j) => (j === i ? { ...x, value: c.value, kind: c.kind, chain: c.chain } : x)));
-                        look(c.value);
-                      }}
-                    >
-                      {it.choices.map((c) => (
-                        <option key={c.value} value={c.value}>
-                          {c.chain}
-                        </option>
-                      ))}
-                    </select>
-                  )}
                 </div>
                 <div className="account-sub">
                   <code title={it.value.includes("…") ? "Saved, shown shortened" : it.value}>{short(it.value)}</code>
-                  <Found look={looks[it.value]} />
+                  <Found
+                    look={looks[it.value]}
+                    others={it.choices?.filter((c) => c.value !== it.value)}
+                    onReadAs={(c) => {
+                      update((cur) => cur.map((x, j) => (j === i ? { ...x, value: c.value, kind: c.kind, chain: c.chain } : x)));
+                      look(c.value);
+                    }}
+                  />
                 </div>
               </div>
               <button type="button" className="link small" onClick={() => update((cur) => cur.filter((_, j) => j !== i))}>
@@ -172,10 +162,28 @@ export function AccountList(p: Props) {
   );
 }
 
-/** What an account holds now, in one line. */
-function Found({ look }: { look?: Look }) {
+type Choice = NonNullable<Detected["choices"]>[number];
+
+/** What an account holds now, in one line. An empty one whose key other
+ * chains share (a plain xpub) offers to read it as those. */
+function Found({ look, others, onReadAs }: { look?: Look; others?: Choice[]; onReadAs: (c: Choice) => void }) {
   if (!look) return null;
   if (look.state === "checking") return <span className="found muted">Reading…</span>;
+  if (look.state === "done" && look.balances.length === 0 && others && others.length > 0) {
+    return (
+      <span className="found found-warn">
+        Empty right now. Another chain's account? Read it as{" "}
+        {others.map((c, k) => (
+          <span key={c.value}>
+            {k > 0 && (k === others.length - 1 ? " or " : ", ")}
+            <button type="button" className="link" onClick={() => onReadAs(c)}>
+              {c.chain}
+            </button>
+          </span>
+        ))}
+      </span>
+    );
+  }
   if (look.state === "error") {
     return <span className="found found-error">{look.message.charAt(0).toUpperCase() + look.message.slice(1)}</span>;
   }
