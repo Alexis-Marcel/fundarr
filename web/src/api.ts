@@ -8,19 +8,29 @@ export interface Field {
   help?: string;
   lines?: boolean; // a list, one value per line
   advanced?: boolean; // tucked under "Advanced"
+  hidden?: boolean; // set by the UI, not a field
 }
 
 /** One saved value of a list (masked), and what it is. */
 export interface ListItem {
-  value: string;
+  value: string; // masked when saved
+  label?: string; // the name given to it
+  kind?: string; // chain, for icons
   chain?: string;
 }
 
 /** What a value pasted in a list is, before saving. */
 export interface Detected {
+  kind: string;
   chain: string;
   value: string; // how to store it
-  choices?: { chain: string; value: string }[]; // other chains it can be read on
+  choices?: { kind: string; chain: string; value: string }[]; // other chains it can be read on
+}
+
+export interface Balance {
+  account: string;
+  asset: Asset;
+  qty: string;
 }
 
 export interface SourceDef {
@@ -247,6 +257,8 @@ export const api = {
   definitions: () => call<{ sources: SourceDef[]; destinations: DestDef[] }>("GET", "/api/definitions"),
   sources: () => call<Source[]>("GET", "/api/sources"),
   createSource: (in_: EntityInput) => call<Source>("POST", "/api/sources", in_),
+  preview: (kind: string, value: string, sourceId?: string) =>
+    call<{ balances: Balance[] }>("POST", `/api/kinds/${kind}/preview`, { value, sourceId }),
   detect: (kind: string, value: string) => call<Detected>("POST", `/api/kinds/${kind}/detect`, { value }),
   testSource: (in_: EntityInput & { id?: string }) => call<{ ok: boolean }>("POST", "/api/sources/test", in_),
   updateSource: (id: string, in_: EntityInput) => call<Source>("PUT", `/api/sources/${id}`, in_),

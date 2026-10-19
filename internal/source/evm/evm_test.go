@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -357,7 +358,7 @@ func TestSettingsAndErrors(t *testing.T) {
 		t.Error("bad state")
 	}
 	s, err := def.New(source.Config{Values: map[string]string{"address": wallet}})
-	if err != nil || s.(*Source).chains[0].Name != "ethereum" || s.(*Source).api.blockscout(chains["base"]) != "https://base.blockscout.com/api" {
+	if err != nil || s.(*Source).chains[0].Name != "ethereum" || s.(*Source).api.free(chains["ethereum"]) != "https://eth.blockscout.com/api" {
 		t.Fatalf("defaults %v", err)
 	}
 	if err := s.Activities(context.Background(), source.Fetch{}); err == nil {
@@ -447,5 +448,37 @@ func TestKeyOnlyNetworks(t *testing.T) {
 	}
 	if !found {
 		t.Error("bsc must be read with a key")
+	}
+}
+
+func TestRoutes(t *testing.T) {
+	addr := "0x52908400098527886e0f7030069857d2e4169ee7"
+	names := func(s source.Source) string {
+		var n []string
+		for _, c := range s.(*Source).chains {
+			n = append(n, c.Name)
+		}
+		return strings.Join(n, ",")
+	}
+	// Without a key: what free explorers still answer.
+	s, err := New(source.Config{Values: map[string]string{"address": addr, "chains": All}})
+	if err != nil || names(s) != "avalanche,ethereum,optimism" {
+		t.Fatalf("free %s %v", names(s), err)
+	}
+	if _, err := New(source.Config{Values: map[string]string{"address": addr, "chains": "arbitrum"}}); err == nil || !strings.Contains(err.Error(), "Blockscout") {
+		t.Errorf("arbitrum without key: %v", err)
+	}
+	// A free Blockscout key reads its networks through the PRO API.
+	s, _ = New(source.Config{Values: map[string]string{"address": addr, "chains": All, "blockscout_key": "proapi_x"}})
+	if names(s) != "arbitrum,avalanche,base,ethereum,gnosis,optimism,polygon" {
+		t.Errorf("pro %s", names(s))
+	}
+	q := url.Values{}
+	if base, ok := s.(*Source).api.route(chains["base"], q); !ok || base != "https://api.blockscout.com/v2/api" || q.Get("chain_id") != "8453" || q.Get("apikey") != "proapi_x" {
+		t.Errorf("pro route %s %v", base, q)
+	}
+	q = url.Values{}
+	if base, _ := s.(*Source).api.route(chains["avalanche"], q); base != chains["avalanche"].Free || q.Get("apikey") != "" {
+		t.Errorf("avalanche route %s %v", base, q)
 	}
 }

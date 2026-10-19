@@ -42,28 +42,28 @@ import (
 // Chain is a supported network.
 type Chain struct {
 	Name    string // as typed in the settings
-	ID      int    // EIP-155 chain id (Etherscan v2)
-	Host    string // Blockscout host
+	ID      int    // EIP-155 chain id (Etherscan v2, Blockscout PRO)
 	Native  string // native coin symbol
 	Decimal int32
-	// API, when set, replaces Blockscout: another Etherscan-compatible
-	// explorer for networks Blockscout does not index.
-	API string
-	// KeyOnly: no free explorer indexes it; read only through Etherscan v2,
-	// with a key whose plan covers it.
-	KeyOnly bool
+	// Free: an Etherscan-compatible explorer that answers without a key
+	// ("" when none does any more).
+	Free string
+	// Pro: indexed by Blockscout's PRO API, free with a key.
+	Pro bool
 }
 
+// Public explorers keep closing their free APIs behind bot checks; what
+// still answers without a key is listed in Free, the rest needs a free
+// Blockscout key (or an Etherscan one).
 var chains = map[string]Chain{
-	"ethereum": {"ethereum", 1, "eth.blockscout.com", "ETH", 18, "", false},
-	"arbitrum": {"arbitrum", 42161, "arbitrum.blockscout.com", "ETH", 18, "", false},
-	"base":     {"base", 8453, "base.blockscout.com", "ETH", 18, "", false},
-	"optimism": {"optimism", 10, "optimism.blockscout.com", "ETH", 18, "", false},
-	"polygon":  {"polygon", 137, "polygon.blockscout.com", "POL", 18, "", false},
-	"gnosis":   {"gnosis", 100, "gnosis.blockscout.com", "XDAI", 18, "", false},
-	"avalanche": {"avalanche", 43114, "", "AVAX", 18,
-		"https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api", false},
-	"bsc": {"bsc", 56, "", "BNB", 18, "", true},
+	"ethereum":  {"ethereum", 1, "ETH", 18, "https://eth.blockscout.com/api", true},
+	"arbitrum":  {"arbitrum", 42161, "ETH", 18, "", true},
+	"base":      {"base", 8453, "ETH", 18, "", true},
+	"optimism":  {"optimism", 10, "ETH", 18, "https://explorer.optimism.io/api", true},
+	"polygon":   {"polygon", 137, "POL", 18, "", true},
+	"gnosis":    {"gnosis", 100, "XDAI", 18, "", true},
+	"avalanche": {"avalanche", 43114, "AVAX", 18, "https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan/api", false},
+	"bsc":       {"bsc", 56, "BNB", 18, "", false},
 }
 
 // All is the "chains" value that reads every supported network.
@@ -92,8 +92,10 @@ func init() {
 			{Name: "address", Label: "Address", Help: "0x… public address"},
 			{Name: "chains", Label: "Networks", Optional: true,
 				Help: "comma-separated, or all; default ethereum. Available: " + strings.Join(chainNames(), ", ")},
+			{Name: "blockscout_key", Label: "Blockscout API key", Secret: true, Optional: true,
+				Help: "free at dev.blockscout.com: reads Arbitrum, Base, Polygon and Gnosis, which no longer answer without a key"},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true,
-				Help: "optional: uses Etherscan v2 instead of Blockscout where the key's plan allows (free key at etherscan.io); required for bsc"},
+				Help: "optional: uses Etherscan v2 where the key's plan allows (free key at etherscan.io); required for bsc"},
 		},
 		Setup: "Fundarr only reads the public history of the address: nothing to sign, no permission to give. " +
 			"In Ledger Live, open the Ethereum account and copy its receive address (0x…). " +
@@ -114,11 +116,30 @@ func New(cfg source.Config) (source.Source, error) {
 	if strings.TrimSpace(raw) == "" {
 		raw = "ethereum"
 	}
-	key := strings.TrimSpace(cfg.Get("etherscan_key"))
+	hc := cfg.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 60 * time.Second}
+	}
+	api := &client{
+		http:      hc,
+		key:       strings.TrimSpace(cfg.Get("etherscan_key")),
+		pro:       strings.TrimSpace(cfg.Get("blockscout_key")),
+		etherscan: "https://api.etherscan.io/v2/api",
+		proURL:    "https://api.blockscout.com/v2/api",
+		free:      func(c Chain) string { return c.Free },
+		pause:     250 * time.Millisecond,
+		sleep:     sleepCtx,
+	}
+	if b := strings.TrimRight(strings.TrimSpace(cfg.Get("base_url")), "/"); b != "" {
+		// Tests: every network, Etherscan and Blockscout PRO answer at this URL.
+		api.free = func(c Chain) string { return b + "/" + c.Name + "/api" }
+		api.etherscan, api.proURL = b+"/v2/api", b+"/pro/api"
+	}
 	if strings.EqualFold(strings.TrimSpace(raw), All) {
+		// Every network a key or a free explorer lets Fundarr read.
 		var ns []string
 		for _, n := range chainNames() {
-			if !chains[n].KeyOnly || key != "" {
+			if api.readable(chains[n]) {
 				ns = append(ns, n)
 			}
 		}
@@ -133,7 +154,10 @@ func New(cfg source.Config) (source.Source, error) {
 		if !ok {
 			return nil, fmt.Errorf("evm: unknown network %q (available: %s)", n, strings.Join(chainNames(), ", "))
 		}
-		if c.KeyOnly && key == "" {
+		if !api.readable(c) {
+			if c.Pro {
+				return nil, fmt.Errorf("evm: %s needs an API key: a free Blockscout key (dev.blockscout.com) or an Etherscan one", n)
+			}
 			return nil, fmt.Errorf("evm: %s has no free explorer: add an Etherscan API key whose plan covers it", n)
 		}
 		seen[n] = true
@@ -142,30 +166,7 @@ func New(cfg source.Config) (source.Source, error) {
 	if len(cs) == 0 {
 		return nil, errors.New("evm: choose at least one network")
 	}
-	hc := cfg.HTTP
-	if hc == nil {
-		hc = &http.Client{Timeout: 60 * time.Second}
-	}
-	s := &Source{
-		addr:   strings.ToLower(addr),
-		chains: cs,
-		api: &client{
-			http:      hc,
-			key:       strings.TrimSpace(cfg.Get("etherscan_key")),
-			etherscan: "https://api.etherscan.io/v2/api",
-			blockscout: func(c Chain) string {
-				return "https://" + c.Host + "/api"
-			},
-			pause: 250 * time.Millisecond,
-			sleep: sleepCtx,
-		},
-		st: state{Chains: map[string]*chainState{}},
-	}
-	if b := strings.TrimRight(strings.TrimSpace(cfg.Get("base_url")), "/"); b != "" {
-		// Tests: every network and Etherscan answer at this URL.
-		s.api.blockscout = func(c Chain) string { return b + "/" + c.Name + "/api" }
-		s.api.etherscan = b + "/v2/api"
-	}
+	s := &Source{addr: strings.ToLower(addr), chains: cs, api: api, st: state{Chains: map[string]*chainState{}}}
 	if len(cfg.State) > 0 {
 		if err := json.Unmarshal(cfg.State, &s.st); err != nil {
 			return nil, fmt.Errorf("evm: bad saved state: %w", err)
@@ -267,18 +268,50 @@ func (s *Source) State() []byte {
 // ---- HTTP
 
 type client struct {
-	http       *http.Client
-	key        string
-	etherscan  string
-	blockscout func(Chain) string
-	pause      time.Duration
-	sleep      func(context.Context, time.Duration) error
+	http      *http.Client
+	key       string // Etherscan
+	pro       string // Blockscout PRO
+	etherscan string
+	proURL    string
+	free      func(Chain) string
+	pause     time.Duration
+	sleep     func(context.Context, time.Duration) error
 
 	mu   sync.Mutex
 	last time.Time
-	// free: networks the key's plan does not cover, read from their free
-	// explorer instead.
-	free map[string]bool
+	// unplanned: networks the Etherscan key's plan does not cover, read
+	// another way instead.
+	unplanned map[string]bool
+}
+
+// route says where a network is read: Etherscan when its key's plan covers
+// it, then Blockscout PRO with its key, then a free explorer.
+func (c *client) route(ch Chain, q url.Values) (base string, ok bool) {
+	q.Del("chainid")
+	q.Del("chain_id")
+	q.Del("apikey")
+	c.mu.Lock()
+	etherscan := c.key != "" && !c.unplanned[ch.Name]
+	c.mu.Unlock()
+	switch {
+	case etherscan:
+		q.Set("chainid", strconv.Itoa(ch.ID))
+		q.Set("apikey", c.key)
+		return c.etherscan, true
+	case c.pro != "" && ch.Pro:
+		q.Set("chain_id", strconv.Itoa(ch.ID))
+		q.Set("apikey", c.pro)
+		return c.proURL, true
+	case c.free(ch) != "":
+		return c.free(ch), true
+	}
+	return "", false
+}
+
+// readable: some way to read the network is configured.
+func (c *client) readable(ch Chain) bool {
+	_, ok := c.route(ch, url.Values{})
+	return ok
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -316,18 +349,11 @@ func isRateLimit(m string) bool {
 
 // get calls module=account&action=… for a chain and decodes result into out.
 func (c *client) get(ctx context.Context, ch Chain, q url.Values, out any) error {
-	base := c.blockscout(ch)
-	c.mu.Lock()
-	viaKey := c.key != "" && (ch.KeyOnly || ch.API == "" && !c.free[ch.Name])
-	c.mu.Unlock()
-	if viaKey {
-		base = c.etherscan
-		q.Set("chainid", strconv.Itoa(ch.ID))
-		q.Set("apikey", c.key)
-	} else {
-		q.Del("chainid")
-		q.Del("apikey")
+	base, ok := c.route(ch, q)
+	if !ok {
+		return fmt.Errorf("%s: no way to read it (a free Blockscout key reads it)", ch.Name)
 	}
+	viaKey := base == c.etherscan
 	q.Set("module", "account")
 	u := base + "?" + q.Encode()
 	backoff := 2 * time.Second
@@ -404,16 +430,19 @@ func (c *client) get(ctx context.Context, ch Chain, q url.Values, out any) error
 			if msg == "" {
 				msg = env.Message
 			}
-			if viaKey && !ch.KeyOnly && strings.Contains(strings.ToLower(msg), "upgrade") {
-				// "Free API access is not supported for this chain": the
-				// network's free explorer answers instead.
+			if viaKey && strings.Contains(strings.ToLower(msg), "upgrade") {
+				// "Free API access is not supported for this chain": read
+				// the network another way, if there is one.
 				c.mu.Lock()
-				if c.free == nil {
-					c.free = map[string]bool{}
+				if c.unplanned == nil {
+					c.unplanned = map[string]bool{}
 				}
-				c.free[ch.Name] = true
+				c.unplanned[ch.Name] = true
 				c.mu.Unlock()
-				return c.get(ctx, ch, q, out)
+				if c.readable(ch) {
+					return c.get(ctx, ch, q, out)
+				}
+				return fmt.Errorf("%s: your Etherscan plan does not cover it", ch.Name)
 			}
 			return fmt.Errorf("%s %s: %s", ch.Name, q.Get("action"), msg)
 		}

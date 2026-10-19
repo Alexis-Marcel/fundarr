@@ -51,8 +51,7 @@ var (
 			verYpub: {p2shP2wpkh},
 			verZpub: {p2wpkh},
 		},
-		servers: []server{{url: "https://mempool.space/api"}, {url: "https://blockstream.info/api"},
-			{url: "https://btc1.trezor.io/api/v2", blockbook: true}}}
+		servers: []server{{url: "https://mempool.space/api"}, {url: "https://blockstream.info/api"}}}
 
 	Litecoin = Coin{Name: "Litecoin", Symbol: "LTC",
 		params: &chaincfg.Params{Name: "litecoin", PubKeyHashAddrID: 0x30, ScriptHashAddrID: 0x32, Bech32HRPSegwit: "ltc"},

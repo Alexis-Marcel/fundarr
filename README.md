@@ -29,7 +29,7 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 |---|---|---|
 | Binance | Since 2017 | Read-only API key. Spot trades, converts, Auto-Invest, card and bank purchases, Simple Earn rewards, ETH/SOL staking, distributions, dust, Binance Pay (18 months), P2P (6 months). Binance's API returns spot trades from about the last two years only, and none on delisted pairs; Binance offers no API for its transaction history export. Fundarr corrects the balances, and importing the export once replaces the corrections with the real trades. |
 | OKX | Since Feb 2021 | Read-only v5 key. Older trading history comes from OKX's quarterly archives, ready about 2 hours after the first sync. Bank (SEPA) deposits and withdrawals included. Regional domains (EEA, US) detected. |
-| Wallet | Full | A hardware wallet (Ledger, Trezor…) or a wallet app (MetaMask, Phantom, Trust Wallet, Exodus…), every account in one source; paste each key or address and Fundarr recognizes its blockchain. Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: extended public key, every address type in use, or the single address of a wallet app that uses one (Esplora or Blockbook servers, or your own). Ethereum & EVM: the 0x… address, read on every network (Ethereum, Arbitrum, Base, Optimism, Polygon, Gnosis, Avalanche, and BNB Chain with an Etherscan key whose plan covers it). Tron: TRX and TRC-20 tokens. Cardano: ADA and staking rewards (Koios). XRP: XRP and issued tokens from known issuers. Solana: SOL and verified SPL tokens (public RPC, or your own). A send between two accounts of the wallet counts as its fee only. |
+| Wallet | Full | A hardware wallet (Ledger, Trezor…) or a wallet app (MetaMask, Phantom, Trust Wallet, Exodus…), every account in one source, with a guide for each app and each account's balance shown before saving; paste each key or address and Fundarr recognizes its blockchain. Bitcoin, Litecoin, Dogecoin, Bitcoin Cash: extended public key, every address type in use, or the single address of a wallet app that uses one (Esplora or Blockbook servers, or your own). Ethereum & EVM: the 0x… address, read on Ethereum, Optimism and Avalanche, on Arbitrum, Base, Polygon and Gnosis with a free Blockscout key, and on BNB Chain with an Etherscan key whose plan covers it. Tron: TRX and TRC-20 tokens. Cardano: ADA and staking rewards (Koios). XRP: XRP and issued tokens from known issuers. Solana: SOL and verified SPL tokens (public RPC, or your own). A send between two accounts of the wallet counts as its fee only. |
 
 | Destination | How |
 |---|---|
@@ -94,3 +94,5 @@ FUNDARR_DATA=./data FUNDARR_ADDR=127.0.0.1:9494 go run ./cmd/fundarr
 ## License
 
 [AGPL-3.0](LICENSE). If you run a modified Fundarr for others, share your changes.
+
+Coin icons come from [cryptocurrency-icons](https://github.com/spothq/cryptocurrency-icons) (CC0) and ship with Fundarr, so no third party learns which coins you hold.

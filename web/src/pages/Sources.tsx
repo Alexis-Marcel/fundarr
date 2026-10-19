@@ -3,8 +3,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, type Source, type SourceDef } from "../api";
 import { KindBadge, StatusDot, type Health } from "../components/Badge";
 import { EntityForm } from "../components/EntityForm";
+import { WalletGuide } from "../components/WalletGuide";
+import { otherApp, walletApps, type WalletApp } from "../wallets";
 import { Modal } from "../components/Modal";
-import { ago, isZeroTime, usePoll } from "../lib";
+import { ago, badgeKind, isZeroTime, usePoll } from "../lib";
 
 export function health(s: Source): Health {
   if (s.running) return "running";
@@ -66,7 +68,7 @@ export function SourcesPage({ defs }: { defs: SourceDef[] }) {
           {data.map((s) => (
             <li key={s.id} className={`row ${!s.enabled ? "is-off" : ""}`}>
               <Link to={`/sources/${s.id}`} className="row-link">
-                <KindBadge kind={s.kind} />
+                <KindBadge kind={badgeKind(s)} />
                 <span className="row-main">
                   <strong>{s.name}</strong>
                   <span className={`row-status status-${health(s)}`}>
@@ -105,10 +107,32 @@ export function SourcesPage({ defs }: { defs: SourceDef[] }) {
 
 function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () => void; onAdded: () => void }) {
   const [def, setDef] = useState<SourceDef | null>(null);
+  // A Wallet first asks which one: the guide follows the app.
+  const [app, setApp] = useState<WalletApp | null>(null);
   const navigate = useNavigate();
+  const wallet = def?.kind === "wallet";
+  const title = !def ? "Add a source" : wallet && !app ? "Which wallet?" : `Add ${app?.name ?? def.name}`;
   return (
-    <Modal title={def ? `Add ${def.name}` : "Add a source"} onClose={onClose} wide={!def}>
-      {!def ? (
+    <Modal title={title} onClose={onClose} wide={!def || (wallet && !app)}>
+      {def && wallet && !app ? (
+        <div className="picker">
+          {[...walletApps, otherApp].map((a) => (
+            <button key={a.id} className="pick" onClick={() => setApp(a)}>
+              <KindBadge kind={a.id} size={44} />
+              <span>
+                <strong>{a.id === "other" ? "Another wallet" : a.name}</strong>
+                <small>{a.id === "other" ? "any app or device" : a.kind === "hardware" ? "hardware wallet" : "wallet app"}</small>
+              </span>
+            </button>
+          ))}
+          <p className="muted small picker-note">
+            The choice only picks the guide: any wallet can hold accounts of every blockchain Fundarr reads.{" "}
+            <button className="link small" onClick={() => setDef(null)}>
+              Back
+            </button>
+          </p>
+        </div>
+      ) : !def ? (
         <div className="picker">
           {defs.filter((d) => !d.hidden).map((d) => (
             <button key={d.kind} className="pick" onClick={() => setDef(d)}>
@@ -126,9 +150,11 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
       ) : (
         <EntityForm
           kind={def.kind}
-          defName={def.name}
+          defName={app && app.id !== "other" ? app.name : def.name}
           fields={def.fields}
           setup={def.setup}
+          settings={app ? { app: app.id } : undefined}
+          guide={app ? <WalletGuide app={app} /> : undefined}
           saveLabel="Save and sync"
           onTest={async (name, values) => {
             await api.testSource({ kind: def.kind, name, values });

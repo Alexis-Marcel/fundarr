@@ -145,7 +145,8 @@ func NewCoin(coin Coin, cfg source.Config) (source.Source, error) {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
 	b := &Wallet{coin: coin, addr: addr, key: key, types: types, now: time.Now,
-		c: &client{base: first.url, blockbook: first.blockbook, fallback: fallback, http: hc, pause: 120 * time.Millisecond, sleep: sleepCtx}}
+		c: &client{base: first.url, blockbook: first.blockbook, fallback: fallback, http: hc, pause: 60 * time.Millisecond, sleep: sleepCtx}}
+	b.c.skipDown()
 	if len(cfg.State) > 0 {
 		_ = json.Unmarshal(cfg.State, &b.st)
 	}
@@ -206,22 +207,33 @@ func (b *Wallet) scan(ctx context.Context, progress func(string, ...any)) (*scan
 	for _, t := range b.types {
 		for chain := uint32(0); chain <= 1; chain++ {
 			gap := 0
-			for i := uint32(0); gap < GapLimit; i++ {
-				addr, err := b.coin.derive(b.key, t, chain, i)
+			// Addresses are asked GapLimit at a time, in parallel; the gap
+			// is then counted in order.
+			for start := uint32(0); gap < GapLimit; start += GapLimit {
+				addrs := make([]string, GapLimit)
+				for i := range addrs {
+					a, err := b.coin.derive(b.key, t, chain, start+uint32(i))
+					if err != nil {
+						return nil, err
+					}
+					addrs[i] = a
+				}
+				stats, err := b.c.addresses(ctx, addrs)
 				if err != nil {
 					return nil, err
 				}
-				st, err := b.c.address(ctx, addr)
-				if err != nil {
-					return nil, err
-				}
-				total++
-				s.owned[addr] = true
-				if st.Chain.TxCount > 0 || st.Mempool.TxCount > 0 {
-					s.used = append(s.used, used{addr: addr, stats: st})
-					gap = 0
-				} else {
-					gap++
+				for i, addr := range addrs {
+					if gap >= GapLimit {
+						break
+					}
+					total++
+					s.owned[addr] = true
+					if st := stats[i]; st.Chain.TxCount > 0 || st.Mempool.TxCount > 0 {
+						s.used = append(s.used, used{addr: addr, stats: st})
+						gap = 0
+					} else {
+						gap++
+					}
 				}
 			}
 		}
