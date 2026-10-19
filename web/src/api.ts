@@ -126,6 +126,7 @@ export interface Session {
   setup: boolean; // no account yet: show the create-account screen
   local: boolean; // the request comes from a private network
   fixed: boolean; // password set by FUNDARR_PASSWORD_HASH
+  auto: boolean; // go to the identity provider without a click
   version: string;
 }
 

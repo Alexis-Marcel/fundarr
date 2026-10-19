@@ -150,6 +150,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		"setup":   s.auth.needsSetup(r.Context()),
 		"local":   fromPrivateNetwork(r),
 		"fixed":   s.auth.cfg.PasswordHash != "",
+		"auto":    s.auth.cfg.Mode == "oidc" && s.auth.cfg.OIDCAutoRedirect,
 		"version": s.cfg.Version,
 	})
 }
