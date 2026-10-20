@@ -108,7 +108,7 @@ Fundarr-Signature: t=1729425600,v1=5d2c…
 
 ## `GET /api/v1/holdings`
 
-What each source reported holding at its last sync.
+What each source reported holding at its last sync, account by account. An `account` of `"*"` is one figure the platform gave for all the source's accounts together; `unread: true` marks a balance the platform did not say, its `qty` being what the history adds up to.
 
 ## Portfolio
 

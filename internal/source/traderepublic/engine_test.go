@@ -16,6 +16,7 @@ import (
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/internal/source/traderepublic"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
 // The whole Connect flow through the engine, against the fake: a sync
@@ -160,5 +161,91 @@ func TestCSVThroughEngine(t *testing.T) {
 	ent, _ := st.Source(ctx, "tr")
 	if eng.Session(ent) != nil || eng.LoginNeeded(ent) {
 		t.Fatal("CSV mode signs in")
+	}
+}
+
+// A dividend paid into the PEA, then a sync: whatever shape the cash topic
+// answers in, the PEA's cash and the main account's agree with the history
+// and no correction is made, least of all one moving cash between them.
+func TestConnectPEADividend(t *testing.T) {
+	ctx := context.Background()
+	f := traderepublic.NewFake(t)
+	f.Export = traderepublic.FakeExportPEADividend()
+	st, err := store.Open(filepath.Join(t.TempDir(), "f.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	box, _ := secret.New(bytes.Repeat([]byte{7}, 32))
+	eng := engine.New(st, box, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	engine.LoginPoll = 10 * time.Millisecond
+	sealed, _ := json.Marshal(map[string]string{"pin": "1234"})
+	if err := st.PutSource(ctx, &store.Entity{ID: "tr", Kind: "traderepublic", Name: "Trade Republic", Enabled: true, Secrets: box.Seal(sealed),
+		Settings: map[string]string{"mode": "connect", "phone": "+33612345678", "base_url": f.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	f.SetCash(traderepublic.CashMainOnly)
+	if _, err := eng.StartLogin(ctx, "tr", ""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ent, _ := st.Source(ctx, "tr")
+		if !ent.LastOK.IsZero() && !eng.Running("tr") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no sync after sign-in: %q", ent.LastErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The correction the former reading made: EUR out of the main account.
+	stale := model.Activity{SourceID: "tr", NativeID: model.AdjustPrefix + "fiat:EUR:out:now:5.4", Time: time.Now().UTC(), Type: model.Adjustment,
+		Side: model.Out, Base: model.Amt(model.CryptoOrFiat("EUR"), "5.4"), Note: "in the history but no longer held on the platform"}
+	stale.ID = model.ActivityID("tr", stale.NativeID)
+	if _, err := st.AddActivities(ctx, []model.Activity{stale}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, cash string }{
+		{"PEA left out", traderepublic.CashMainOnly},
+		{"a line each", traderepublic.CashEach},
+		{"main account, no number", traderepublic.CashMainNoNumber},
+		{"one total", traderepublic.CashTotal},
+		{"one total under the main number", traderepublic.CashTotalAsMain},
+		{"PEA under an unknown number", traderepublic.CashPEAUnknownNumber},
+	} {
+		f.SetCash(c.cash)
+		res, err := eng.Sync(ctx, "tr")
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		adjs, _ := st.Adjustments(ctx, "tr")
+		gaps, _ := eng.Reconcile(ctx, "tr")
+		if len(adjs) != 0 || len(gaps) != 0 || res.Adjusted != 0 {
+			t.Fatalf("%s: corrections %+v, gaps %+v", c.name, adjs, gaps)
+		}
+		bal, _, _ := st.Balances(ctx, "tr")
+		cash := map[string]string{}
+		for _, b := range bal {
+			if b.Asset.Symbol == "EUR" {
+				cash[b.Account] = b.Qty.String()
+			}
+		}
+		want := map[string]string{"": "-38.47", "PEA": "75.4"}
+		if c.cash == traderepublic.CashTotal || c.cash == traderepublic.CashTotalAsMain {
+			want = map[string]string{model.AllAccounts: "36.93"}
+		}
+		if len(cash) != len(want) || cash[""] != want[""] || cash["PEA"] != want["PEA"] || cash[model.AllAccounts] != want[model.AllAccounts] {
+			t.Fatalf("%s: cash %v", c.name, cash)
+		}
+	}
+	// The cash really off: the correction goes to the account that is.
+	f.SetCash(`[{"accountNumber":"CASH1","currencyId":"EUR","amount":-38.47},{"accountNumber":"CASH2","currencyId":"EUR","amount":70}]`)
+	if _, err := eng.Sync(ctx, "tr"); err != nil {
+		t.Fatal(err)
+	}
+	adjs, _ := st.Adjustments(ctx, "tr")
+	if len(adjs) != 1 || adjs[0].Account != "PEA" || adjs[0].Side != model.Out || !adjs[0].Base.Qty.Equal(model.Amt(model.CryptoOrFiat("EUR"), "5.4").Qty) {
+		t.Fatalf("PEA short: %+v", adjs)
 	}
 }

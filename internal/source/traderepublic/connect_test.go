@@ -340,3 +340,33 @@ func TestSessionEnd(t *testing.T) {
 		t.Errorf("ETF %+v", a)
 	}
 }
+
+// Without the export to tell, a cash answer naming accounts is read
+// account by account, one naming none is compared over all of them.
+func TestCashBalancesWithoutHistory(t *testing.T) {
+	accounts := parsePairs([]byte(fakePairs))
+	read := func(answer string) map[string]string {
+		out := map[string]string{}
+		for _, b := range cashBalances(accounts, parseCash([]byte(answer)), nil, func(string, ...any) {}) {
+			v := b.Qty.String()
+			if b.Unread {
+				v = "unread"
+			}
+			out[b.Account+" "+b.Asset.Symbol] = v
+		}
+		return out
+	}
+	cases := map[string]map[string]string{
+		CashEach:             {" EUR": "-38.47", "PEA EUR": "75.4"},
+		CashMainOnly:         {" EUR": "-38.47", "PEA EUR": "unread"},
+		CashPEAUnknownNumber: {" EUR": "-38.47", "PEA EUR": "75.4"},
+		CashTotal:            {"* EUR": "36.93"},
+		CashMainNoNumber:     {"* EUR": "-38.47"},
+	}
+	for answer, want := range cases {
+		got := read(answer)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s: %v, want %v", answer, got, want)
+		}
+	}
+}

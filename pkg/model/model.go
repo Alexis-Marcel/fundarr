@@ -153,8 +153,12 @@ func ActivityID(sourceID, nativeID string) string {
 
 // Balance is what a platform says is held right now.
 type Balance struct {
-	Account string `json:"account"`
+	Account string `json:"account"` // AllAccounts: every account together
 	Amount
+	// Unread: the platform did not say how much of the asset this account
+	// holds. Qty is then what the history adds up to, and nothing is
+	// checked.
+	Unread bool `json:"unread,omitempty"`
 }
 
 // Price returns the unit price of a trade (Quote per Base).
