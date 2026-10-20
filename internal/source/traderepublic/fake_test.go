@@ -101,7 +101,9 @@ func (f *Fake) giveSession(w http.ResponseWriter) {
 	ses, ref := fmt.Sprintf("ses-%d", f.seq), jwt(time.Now().Add(24*time.Hour), f.seq)
 	f.sessions[ses], f.refreshes[ref] = true, true
 	http.SetCookie(w, &http.Cookie{Name: "tr_session", Value: ses, Path: "/", HttpOnly: true})
-	http.SetCookie(w, &http.Cookie{Name: "tr_refresh", Value: ref, Path: "/", HttpOnly: true})
+	// Scoped to where it is used, as a real server may do: a jar asked for
+	// "/" alone does not tell it.
+	http.SetCookie(w, &http.Cookie{Name: "tr_refresh", Value: ref, Path: "/api/v1/auth/web/session", HttpOnly: true})
 	http.SetCookie(w, &http.Cookie{Name: "tr_device", Value: "dev", Path: "/"})
 }
 
