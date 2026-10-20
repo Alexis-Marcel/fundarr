@@ -266,6 +266,10 @@ func (s *Source) finish(ctx context.Context) (*source.Challenge, error) {
 	now := s.c.now()
 	s.st.Cookies, s.st.SignedIn, s.st.Wait = s.c.cookies(), now, time.Time{}
 	s.st.Until = sessionEnd(s.st.Cookies, now)
+	if !hasSession(s.st.Cookies) {
+		return nil, fmt.Errorf("signed in, but Trade Republic gave no session cookie (got: %s)", cookieNames(s.st.Cookies))
+	}
+	s.log("session cookies: %s", cookieNames(s.st.Cookies))
 	s.log("signed in, session until %s UTC", s.st.Until.Format("2006-01-02 15:04"))
 	return nil, nil
 }

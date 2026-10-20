@@ -254,14 +254,37 @@ func scrub(err error) error {
 
 // ---- session
 
+// cookiePaths: where Trade Republic may scope its cookies. A jar only
+// tells the cookies of one URL, so each is asked.
+var cookiePaths = []string{"/", "/api/", "/api/v1/", "/api/v1/auth/", "/api/v1/auth/web/", "/api/v1/auth/web/session",
+	"/api/v2/", "/api/v2/auth/", "/api/v2/auth/web/", "/api/v2/auth/web/login/"}
+
 // cookies of the session, to save in the state.
 func (c *client) cookies() []kv {
-	u, _ := url.Parse(c.base)
 	var out []kv
-	for _, k := range c.jar.Cookies(u) {
-		out = append(out, kv{k.Name, k.Value})
+	seen := map[string]bool{}
+	for _, p := range cookiePaths {
+		u, err := url.Parse(c.base + p)
+		if err != nil {
+			continue
+		}
+		for _, k := range c.jar.Cookies(u) {
+			if !seen[k.Name] {
+				seen[k.Name] = true
+				out = append(out, kv{k.Name, k.Value})
+			}
+		}
 	}
 	return out
+}
+
+// cookieNames, for the log: never the values.
+func cookieNames(list []kv) string {
+	names := make([]string, len(list))
+	for i, k := range list {
+		names[i] = k.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 type kv struct {
