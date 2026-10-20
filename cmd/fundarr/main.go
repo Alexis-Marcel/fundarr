@@ -24,6 +24,7 @@ import (
 	"github.com/Alexis-Marcel/fundarr/web"
 	"golang.org/x/term"
 
+	_ "github.com/Alexis-Marcel/fundarr/internal/dest/ghostfolio"
 	_ "github.com/Alexis-Marcel/fundarr/internal/dest/wealthfolio"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/binance"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/bitcoin"

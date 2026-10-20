@@ -8,7 +8,7 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
  Sources                      Fundarr                         Destinations
  ───────                      ───────                         ────────────
  Binance  ─┐          normalize · dedupe · reconcile    ┌──▶  Wealthfolio
- OKX      ─┼──read-only──▶   activities + balances   ───┼──▶  (Ghostfolio, CSV…)
+ OKX      ─┼──read-only──▶   activities + balances   ───┼──▶  Ghostfolio, CSV, API
  …        ─┘                 SQLite, encrypted keys     └──▶
 ```
 
@@ -37,8 +37,9 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 | Destination | How |
 |---|---|
 | Wealthfolio | Through its MCP endpoint (`WF_MCP_ENABLED=true` and an access token). Stablecoins can count as USD or EUR cash, so crypto bought with them has a price. |
+| Ghostfolio | Through its import API with your security token. Crypto by CoinGecko id or Yahoo symbol, securities by ISIN; transfers keep their cost. Cash moves are skipped (Ghostfolio keeps cash as a balance). |
 
-Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)), Solana, Ghostfolio, CSV. Adding one is a single Go package; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)). Adding one is a single Go package; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Read API
 
