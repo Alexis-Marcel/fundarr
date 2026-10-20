@@ -144,7 +144,7 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
             </button>
           ))}
           <p className="muted small picker-note">
-            More coming: Trade Republic, Kraken, Coinbase…
+            More coming: Trade Republic…
           </p>
         </div>
       ) : (
