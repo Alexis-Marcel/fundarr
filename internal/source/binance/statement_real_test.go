@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
 // Against a real export: BINANCE_STATEMENT=/path/to/Binance-…csv

@@ -7,15 +7,54 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
-	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
+
+// memCache is a Cache in memory, standing for a database.
+type memCache struct {
+	mu     sync.Mutex
+	closes map[string]map[string]string
+	wins   map[string][]Window
+}
+
+func newMemCache() *memCache {
+	return &memCache{closes: map[string]map[string]string{}, wins: map[string][]Window{}}
+}
+
+func (c *memCache) PriceSeries(_ context.Context, pair string) (map[string]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]string{}
+	for d, p := range c.closes[pair] {
+		out[d] = p
+	}
+	return out, nil
+}
+
+func (c *memCache) PriceWindows(_ context.Context, pair string) ([]Window, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Window(nil), c.wins[pair]...), nil
+}
+
+func (c *memCache) PutPrices(_ context.Context, pair string, w Window, closes map[string]string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closes[pair] == nil {
+		c.closes[pair] = map[string]string{}
+	}
+	for d, p := range closes {
+		c.closes[pair][d] = p
+	}
+	c.wins[pair] = append(c.wins[pair], w)
+	return nil
+}
 
 func TestPrices(t *testing.T) {
 	var calls atomic.Int32
@@ -55,11 +94,7 @@ func TestPrices(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	st, err := store.Open(filepath.Join(t.TempDir(), "p.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
+	st := newMemCache()
 	mk := func() *Service {
 		s := New(st, srv.Client())
 		s.BinanceURL, s.OKXURL, s.FXURL = srv.URL, srv.URL, srv.URL+"/fx"
@@ -84,7 +119,7 @@ func TestPrices(t *testing.T) {
 		t.Fatal("an unlisted coin has no price")
 	}
 	n := calls.Load()
-	// Everything is now in the database: a new service asks nothing.
+	// Everything is now in the cache: a new service asks nothing.
 	s = mk()
 	eq("cached", model.CryptoOrFiat("ETH"), "EUR", "1800")
 	if _, err := s.Price(ctx, model.CryptoOrFiat("NOPE"), sat, "EUR"); err == nil || calls.Load() != n {
@@ -101,9 +136,7 @@ func TestLivePrices(t *testing.T) {
 	if os.Getenv("FUNDARR_LIVE_PRICES") == "" {
 		t.Skip("set FUNDARR_LIVE_PRICES=1")
 	}
-	st, _ := store.Open(filepath.Join(t.TempDir(), "p.db"))
-	defer st.Close()
-	s := New(st, &http.Client{Timeout: 30 * time.Second})
+	s := New(nil, &http.Client{Timeout: 30 * time.Second})
 	at := time.Date(2022, 3, 10, 12, 0, 0, 0, time.UTC)
 	for _, sym := range []string{"BTC", "ETH", "MATIC", "POL", "LUNC", "USDC", "EUR", "ARB"} {
 		p, err := s.Price(context.Background(), model.CryptoOrFiat(sym), at, "EUR")

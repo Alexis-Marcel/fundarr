@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
 // Field is one setting of a connector, rendered as a form field by the UI.

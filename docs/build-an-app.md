@@ -48,7 +48,28 @@ An app with its own database stays in sync with [`/api/v1/changes`](api.md#get-a
 
 To be told instead of polling, give the app a notify address in **Apps → Notify**; Fundarr POSTs `{"event":"changes","cursor":…}` there, signed with a secret shown once.
 
-Costs are not in the feed: they depend on prices and on the currency, not only on the history. Read them from `/api/v1/activities`, or compute your own.
+Costs are not in the feed: they depend on prices and on the currency, not only on the history. Read them from `/api/v1/activities`, or compute them as below.
+
+## Compute it yourself (Go)
+
+Fundarr's own code is importable, so a Go app can work out costs, the portfolio and the 2086 form from its copy, with its own rules on top:
+
+| Package | |
+|---|---|
+| `github.com/Alexis-Marcel/fundarr/pkg/api` | The API's JSON types (`Activity`, `Changes`), `Copy.Apply` for the feed, `Ledger` for the rest |
+| `github.com/Alexis-Marcel/fundarr/pkg/model` | Activities; `Books` and `Costs` (average cost per source, transfers at cost), `PairTransfers` |
+| `github.com/Alexis-Marcel/fundarr/pkg/portfolio` | `Now`, `History`, `TaxFR` (2086), given a price function |
+| `github.com/Alexis-Marcel/fundarr/pkg/price` | Daily prices from Binance, OKX and the ECB, no key; `UnitPrice` plugs it into `portfolio` |
+
+```go
+copy := api.Copy{}
+copy.Apply(page) // each page of /api/v1/changes
+acts, transfers := copy.Ledger()
+prices := price.New(nil, http.DefaultClient).UnitPrice(ctx, "EUR")
+tax := portfolio.TaxFR(acts, transfers, prices, 2025, false)
+```
+
+A full example is in [`pkg/portfolio/example_test.go`](../pkg/portfolio/example_test.go). These packages follow Fundarr's versions; anything under `internal/` is not for apps.
 
 ## A full example
 

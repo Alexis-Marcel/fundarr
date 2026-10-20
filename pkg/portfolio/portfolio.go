@@ -2,13 +2,18 @@
 // worth, what went into it and what it gained, now and day by day, and the
 // French tax on its disposals (formulaire 2086). Fiat and securities are
 // left out; stablecoins count as crypto. See docs/api.md.
+//
+// Every function takes the whole history, and the transfers between your
+// own sources as a deposit's id → its withdrawal's id: an app gets both
+// from Fundarr's API with pkg/api (Copy.Ledger), and prices from pkg/price
+// or any function of type Price. See the example.
 package portfolio
 
 import (
 	"sort"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/shopspring/decimal"
 )
 

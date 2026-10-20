@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/shopspring/decimal"

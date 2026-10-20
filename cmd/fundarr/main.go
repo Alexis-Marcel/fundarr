@@ -19,10 +19,10 @@ import (
 
 	"github.com/Alexis-Marcel/fundarr/internal/demo"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
-	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
 	"github.com/Alexis-Marcel/fundarr/internal/server"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/price"
 	"github.com/Alexis-Marcel/fundarr/web"
 	"golang.org/x/term"
 

@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/dest"
-	"github.com/Alexis-Marcel/fundarr/internal/model"
-	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/price"
 	"github.com/shopspring/decimal"
 )
 

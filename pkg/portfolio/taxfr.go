@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/shopspring/decimal"
 )
 

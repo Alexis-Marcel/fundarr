@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
 func open(t *testing.T) *Store {

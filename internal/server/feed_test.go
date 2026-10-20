@@ -17,20 +17,14 @@ import (
 
 	"github.com/Alexis-Marcel/fundarr/internal/demo"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
-	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/api"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
-type feedPage struct {
-	Changes []struct {
-		Op       string
-		ID       string
-		Activity *v1Activity
-	}
-	Cursor string
-	More   bool
-}
+// feedPage: what a Go app decodes the feed into.
+type feedPage = api.Changes
 
 // changes reads one page of the feed.
 func changes(t *testing.T, base, after string, limit int) (feedPage, int) {

@@ -16,8 +16,8 @@ import (
 	"github.com/Alexis-Marcel/fundarr/docs"
 	"github.com/Alexis-Marcel/fundarr/internal/demo"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
-	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
+	"github.com/Alexis-Marcel/fundarr/pkg/price"
 )
 
 // TestOpenAPI: every read route is described, nothing else is, and the

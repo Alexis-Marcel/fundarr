@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
-	"github.com/Alexis-Marcel/fundarr/internal/model"
-	"github.com/Alexis-Marcel/fundarr/internal/portfolio"
+	"github.com/Alexis-Marcel/fundarr/pkg/api"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/portfolio"
 	"github.com/shopspring/decimal"
 )
 
@@ -32,25 +33,11 @@ func (s *Server) reader(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-type v1Source struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-}
-
-// v1Activity is an activity with what Fundarr worked out across sources.
-type v1Activity struct {
-	model.Activity
-	Source v1Source `json:"source"`
-	// Cost: what an incoming asset cost, in Currency (bought with cash,
-	// carried over a transfer, or valued at the day's price).
-	Cost     string `json:"cost,omitempty"`
-	Currency string `json:"currency,omitempty"`
-	// TransferWith: the other side of a move between your own accounts.
-	TransferWith string `json:"transferWith,omitempty"`
-	// Correction: made by Fundarr's balance check, not by the platform.
-	Correction bool `json:"correction,omitempty"`
-}
+// The read API's types live in pkg/api, for Go apps to decode them.
+type (
+	v1Source   = api.Source
+	v1Activity = api.Activity
+)
 
 // activitiesV1 builds the whole list, oldest first, filtered by the query
 // (source, since, until).
@@ -110,7 +97,7 @@ func (s *Server) sourceMap(ctx context.Context) map[string]v1Source {
 	srcs := map[string]v1Source{}
 	if list, err := s.st.Sources(ctx); err == nil {
 		for _, e := range list {
-			srcs[e.ID] = v1Source{e.ID, e.Name, e.Kind}
+			srcs[e.ID] = v1Source{ID: e.ID, Name: e.Name, Kind: e.Kind}
 		}
 	}
 	return srcs
@@ -147,7 +134,7 @@ func (s *Server) v1Sources(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []v1Source{}
 	for _, e := range list {
-		out = append(out, v1Source{e.ID, e.Name, e.Kind})
+		out = append(out, v1Source{ID: e.ID, Name: e.Name, Kind: e.Kind})
 	}
 	writeJSON(w, out)
 }
@@ -174,7 +161,7 @@ func (s *Server) v1Holdings(w http.ResponseWriter, r *http.Request) {
 		if bal == nil {
 			bal = []model.Balance{}
 		}
-		out = append(out, src{v1Source{e.ID, e.Name, e.Kind}, at, bal})
+		out = append(out, src{v1Source{ID: e.ID, Name: e.Name, Kind: e.Kind}, at, bal})
 	}
 	writeJSON(w, out)
 }

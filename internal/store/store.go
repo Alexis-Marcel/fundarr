@@ -15,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/price"
 	_ "modernc.org/sqlite"
 )
 
@@ -651,10 +652,9 @@ func (s *Store) PriceSeries(ctx context.Context, pair string) (map[string]string
 }
 
 // PriceWindow is a range of days already asked to a provider.
-type PriceWindow struct {
-	From, To string // YYYY-MM-DD
-	Fetched  time.Time
-}
+type PriceWindow = price.Window
+
+var _ price.Cache = (*Store)(nil)
 
 func (s *Store) PriceWindows(ctx context.Context, pair string) ([]PriceWindow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT from_day, to_day, fetched_at FROM price_windows WHERE pair = ?`, pair)

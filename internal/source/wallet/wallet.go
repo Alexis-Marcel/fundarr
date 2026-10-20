@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/internal/source/bitcoin"
 	"github.com/Alexis-Marcel/fundarr/internal/source/cardano"
@@ -21,6 +20,7 @@ import (
 	"github.com/Alexis-Marcel/fundarr/internal/source/solana"
 	"github.com/Alexis-Marcel/fundarr/internal/source/tron"
 	"github.com/Alexis-Marcel/fundarr/internal/source/xrp"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
 func init() {

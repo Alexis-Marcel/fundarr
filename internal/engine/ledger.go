@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/shopspring/decimal"
 )
 
@@ -296,7 +296,6 @@ func (e *Engine) UnitPrice(ctx context.Context, ccy string) func(model.Asset, ti
 		if e.Prices == nil {
 			return decimal.Zero, false
 		}
-		p, err := e.Prices.Price(ctx, a, at, ccy)
-		return p, err == nil
+		return e.Prices.UnitPrice(ctx, ccy)(a, at)
 	}
 }
