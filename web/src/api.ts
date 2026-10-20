@@ -218,6 +218,8 @@ export interface Session {
   fixed: boolean; // password set by FUNDARR_PASSWORD_HASH
   auto: boolean; // go to the identity provider without a click
   version: string;
+  demo: boolean; // FUNDARR_DEMO: made-up data, nothing syncs
+  url: string; // FUNDARR_URL, "" when unset
 }
 
 export class ApiError extends Error {

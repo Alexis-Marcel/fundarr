@@ -76,6 +76,8 @@ export function monogram(kind: string) {
     okx: ["OK", 210],
     wealthfolio: ["WF", 150],
     ghostfolio: ["GF", 260],
+    cairn: ["C", 95],
+    app: ["API", 200],
     traderepublic: ["TR", 0],
     bitcoin: ["₿", 32],
     evm: ["Ξ", 230],
