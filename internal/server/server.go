@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Alexis-Marcel/fundarr/docs"
 	"github.com/Alexis-Marcel/fundarr/internal/dest"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
 	"github.com/Alexis-Marcel/fundarr/internal/model"
@@ -43,6 +44,8 @@ type Server struct {
 	eng  *engine.Engine
 	st   *store.Store
 	mux  *http.ServeMux
+	// v1 lists the read API's routes ("GET /api/v1/…"), as registered.
+	v1 []string
 }
 
 func New(ctx context.Context, cfg Config) (*Server, error) {
@@ -118,7 +121,14 @@ func (s *Server) routes() {
 	api("POST /api/tokens", s.createToken)
 	api("DELETE /api/tokens/{id}", s.deleteToken)
 	// The stable read API: a session or an API token.
-	read := func(pattern string, h http.HandlerFunc) { m.HandleFunc(pattern, s.reader(h)) }
+	read := func(pattern string, h http.HandlerFunc) {
+		s.v1 = append(s.v1, pattern)
+		m.HandleFunc(pattern, s.reader(h))
+	}
+	m.HandleFunc("GET /api/v1/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Write(docs.OpenAPI)
+	})
 	read("GET /api/v1/sources", s.v1Sources)
 	read("GET /api/v1/activities", s.v1Activities)
 	read("GET /api/v1/activities.csv", s.v1CSV)
