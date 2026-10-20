@@ -8,14 +8,54 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Alexis-Marcel/fundarr/docs"
 	"github.com/Alexis-Marcel/fundarr/internal/demo"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
 	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
 )
+
+// TestOpenAPI: every read route is described, nothing else is, and the
+// description is served without a token.
+func TestOpenAPI(t *testing.T) {
+	ts, _, _ := setup(t, "password")
+	spec := string(docs.OpenAPI)
+	// Paths are the keys indented by two spaces under "paths:"; each has a get.
+	described := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^  (/api/v1/\S+):\n    get:`).FindAllStringSubmatch(spec, -1) {
+		described[m[1]] = true
+	}
+	srv, err := New(context.Background(), Config{Engine: engine.New(nil, nil, nil), Auth: AuthConfig{Mode: "none"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := append(srv.v1, "GET /api/v1/openapi.yaml")
+	for _, r := range routes {
+		p, ok := strings.CutPrefix(r, "GET ")
+		if !ok || !described[p] {
+			t.Errorf("%s is not in docs/openapi.yaml", r)
+		}
+		delete(described, p)
+	}
+	for p := range described {
+		t.Errorf("docs/openapi.yaml describes %s, which Fundarr does not serve", p)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/v1/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/yaml" || !bytes.HasPrefix(b, []byte("openapi: 3.1")) {
+		t.Fatalf("served %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+}
 
 // TestDemo: the made-up data through the same API, readable with any
 // token; nothing that would reach a platform runs.

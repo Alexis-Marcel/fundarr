@@ -1,0 +1,401 @@
+openapi: 3.1.0
+info:
+  title: Fundarr read API
+  version: "1"
+  summary: Read what Fundarr knows about your exchanges and wallets.
+  description: |
+    Read-only. Send a token made in Fundarr (Apps → Add app):
+    `Authorization: Bearer fdr_…`. A signed-in browser session also works.
+    With `FUNDARR_DEMO=1` the data is made up and any token is accepted
+    (`fdr_demo`, for instance). docs/api.md explains the figures.
+
+    Quantities and money are decimal strings ("0.01", "550.00"), never
+    floats. Times are RFC 3339, in UTC. Errors are `{"error": "…"}`.
+  license:
+    name: AGPL-3.0
+    identifier: AGPL-3.0-only
+servers:
+  - url: http://localhost:9494
+security:
+  - token: []
+
+paths:
+  /api/v1/sources:
+    get:
+      operationId: listSources
+      summary: The configured sources
+      responses:
+        "200":
+          description: Every source.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Source" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/activities:
+    get:
+      operationId: listActivities
+      summary: Every activity of every source, oldest first
+      parameters:
+        - { name: source, in: query, description: One source id., schema: { type: string } }
+        - { name: since, in: query, description: From this time (included)., schema: { type: string, format: date-time } }
+        - { name: until, in: query, description: Up to this time (excluded)., schema: { type: string, format: date-time } }
+        - name: limit
+          in: query
+          description: Activities per page.
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 500 }
+        - { name: after, in: query, description: "The `next` value of the previous page.", schema: { type: string } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [activities, next]
+                properties:
+                  activities:
+                    type: array
+                    items: { $ref: "#/components/schemas/Activity" }
+                  next:
+                    type: string
+                    description: "Pass it as `after` for the next page; empty on the last one."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/activities.csv:
+    get:
+      operationId: activitiesCSV
+      summary: The same list as a CSV file
+      parameters:
+        - name: format
+          in: query
+          description: "`fundarr`: every field. `koinly`: Koinly's universal format (one source per import)."
+          schema: { type: string, enum: [fundarr, koinly], default: fundarr }
+        - { name: source, in: query, description: One source id., schema: { type: string } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: A CSV file, with a header row.
+          content:
+            text/csv:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/holdings:
+    get:
+      operationId: listHoldings
+      summary: What each source reported holding at its last sync
+      responses:
+        "200":
+          description: One entry per source.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: "#/components/schemas/Source"
+                    - type: object
+                      required: [at, balances]
+                      properties:
+                        at:
+                          type: string
+                          format: date-time
+                          description: "When the balances were read (0001-01-01T00:00:00Z: never)."
+                        balances:
+                          type: array
+                          items: { $ref: "#/components/schemas/Balance" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/portfolio:
+    get:
+      operationId: getPortfolio
+      summary: The crypto held now, across sources
+      description: |
+        In the currency of Settings → Valuation. Only crypto counts (stablecoins
+        included). `value` − `invested` = `unrealized` + `realized` + `rewards`.
+      responses:
+        "200":
+          description: The portfolio.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Portfolio" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/portfolio/history:
+    get:
+      operationId: getPortfolioHistory
+      summary: Value and money invested over time
+      parameters:
+        - name: from
+          in: query
+          description: "First day (default: the first activity)."
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: "Last day (default and at most: today)."
+          schema: { type: string, format: date }
+        - name: step
+          in: query
+          description: One point per day, per week (ending on Sunday) or per month (ending on its last day); the last point is `to`.
+          schema: { type: string, enum: [day, week, month], default: day }
+      responses:
+        "200":
+          description: The points, oldest first. None when there is no activity yet.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [currency, points, unpriced]
+                properties:
+                  currency: { type: string, examples: [EUR] }
+                  points:
+                    type: array
+                    items:
+                      type: object
+                      required: [date, value, invested]
+                      properties:
+                        date: { type: string, format: date }
+                        value: { $ref: "#/components/schemas/Money", description: "What the crypto held was worth at that day's close." }
+                        invested: { $ref: "#/components/schemas/Money", description: "Money put in so far." }
+                  unpriced:
+                    type: array
+                    items: { $ref: "#/components/schemas/Asset" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422":
+          description: More than 3700 points; use a longer step or a shorter range.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/tax/fr:
+    get:
+      operationId: getTaxFR
+      summary: French tax on crypto disposals (formulaire 2086)
+      description: Always in EUR. Each disposal for money is one line of the form.
+      parameters:
+        - name: year
+          in: query
+          description: "Calendar year, 2009 to this year (default: last year)."
+          schema: { type: integer }
+        - name: rewards
+          in: query
+          description: "`income`: rewards, airdrops and outside deposits were taxed as income, so they add their value to the acquisition price."
+          schema: { type: string, enum: [income] }
+      responses:
+        "200":
+          description: The year's disposals and totals.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxFR" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/openapi.yaml:
+    get:
+      operationId: getOpenAPI
+      summary: This description
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1, in YAML.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    token:
+      type: http
+      scheme: bearer
+      description: "A read token: fdr_…"
+
+  responses:
+    Unauthorized:
+      description: No session and no live token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: A parameter is not valid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    Decimal:
+      type: string
+      description: An exact decimal number.
+      pattern: "^-?[0-9]+(\\.[0-9]+)?$"
+      examples: ["0.01"]
+
+    Money:
+      type: string
+      description: An amount of money, two decimals.
+      pattern: "^-?[0-9]+\\.[0-9]{2}$"
+      examples: ["550.00"]
+
+    Asset:
+      type: object
+      required: [kind, symbol]
+      properties:
+        kind: { type: string, enum: [crypto, fiat, security] }
+        symbol: { type: string, examples: [BTC] }
+        isin: { type: string, description: "Securities, when known." }
+        name: { type: string }
+
+    Amount:
+      type: object
+      required: [asset, qty]
+      properties:
+        asset: { $ref: "#/components/schemas/Asset" }
+        qty: { $ref: "#/components/schemas/Decimal", description: "Always positive: the type and side say which way it moves." }
+
+    Balance:
+      type: object
+      required: [account, asset, qty]
+      properties:
+        account: { type: string, description: "Sub-account, empty for the main one." }
+        asset: { $ref: "#/components/schemas/Asset" }
+        qty: { $ref: "#/components/schemas/Decimal" }
+
+    Source:
+      type: object
+      required: [id, name, kind]
+      properties:
+        id: { type: string, examples: [9b687b4899f5] }
+        name: { type: string, examples: [Binance] }
+        kind: { type: string, examples: [binance] }
+
+    Activity:
+      type: object
+      required: [id, sourceId, nativeId, account, time, type, base, source]
+      properties:
+        id: { type: string, description: Stable across syncs. }
+        sourceId: { type: string }
+        nativeId: { type: string, description: "The platform's own id." }
+        source: { $ref: "#/components/schemas/Source" }
+        account: { type: string, description: "Sub-account, empty for the main one." }
+        time: { type: string, format: date-time }
+        type:
+          type: string
+          enum: [trade, deposit, withdrawal, reward, fee, dividend, interest, tax, adjustment]
+        side:
+          type: string
+          enum: [buy, sell, in, out]
+          description: Trades (buy, sell) and adjustments (in, out).
+        base: { $ref: "#/components/schemas/Amount" }
+        quote: { $ref: "#/components/schemas/Amount", description: "Trades: what was paid or received." }
+        fee: { $ref: "#/components/schemas/Amount" }
+        network: { type: string }
+        txId: { type: string }
+        address: { type: string }
+        note: { type: string }
+        cost: { $ref: "#/components/schemas/Money", description: "What an incoming asset cost, in `currency`." }
+        currency: { type: string }
+        transferWith: { type: string, description: "The other side of a move between two of your sources." }
+        correction: { type: boolean, description: "Added by Fundarr's balance check, not by the platform." }
+
+    Portfolio:
+      type: object
+      required: [currency, at, total, assets, sources, unpriced]
+      properties:
+        currency: { type: string, examples: [EUR] }
+        at: { type: string, format: date-time }
+        total:
+          type: object
+          required: [value, invested, cost, unrealized, realized, rewards]
+          properties:
+            value: { $ref: "#/components/schemas/Money" }
+            invested: { $ref: "#/components/schemas/Money", description: "Money that came in from outside the crypto portfolio." }
+            cost: { $ref: "#/components/schemas/Money", description: "Average cost of what is held." }
+            unrealized: { $ref: "#/components/schemas/Money" }
+            realized: { $ref: "#/components/schemas/Money" }
+            rewards: { $ref: "#/components/schemas/Money" }
+        assets:
+          type: array
+          description: Largest value first.
+          items:
+            type: object
+            required: [asset, qty, price, value, cost, unrealized, share, sources]
+            properties:
+              asset: { $ref: "#/components/schemas/Asset" }
+              qty: { $ref: "#/components/schemas/Decimal" }
+              price: { $ref: "#/components/schemas/Decimal", description: "One unit, now (more decimals under 1)." }
+              value: { $ref: "#/components/schemas/Money" }
+              cost: { $ref: "#/components/schemas/Money" }
+              unrealized: { $ref: "#/components/schemas/Money" }
+              share: { type: string, description: "Part of `total.value`, 0 to 1.", examples: ["0.588"] }
+              sources:
+                type: array
+                items:
+                  type: object
+                  required: [id, name, qty]
+                  properties:
+                    id: { type: string }
+                    name: { type: string }
+                    qty: { $ref: "#/components/schemas/Decimal" }
+        sources:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/Source"
+              - type: object
+                required: [value]
+                properties:
+                  value: { $ref: "#/components/schemas/Money" }
+        unpriced:
+          type: array
+          description: "Assets with no known price, counted at 0."
+          items: { $ref: "#/components/schemas/Asset" }
+
+    TaxFR:
+      type: object
+      required: [year, currency, disposals, total, notes]
+      properties:
+        year: { type: integer }
+        currency: { type: string, const: EUR }
+        disposals:
+          type: array
+          items:
+            type: object
+            required: [time, source, asset, qty, price, fees, portfolio, acquisition, capitalShare, gain]
+            properties:
+              time: { type: string, format: date-time }
+              source:
+                type: object
+                required: [id, name]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+              asset: { $ref: "#/components/schemas/Asset" }
+              qty: { $ref: "#/components/schemas/Decimal" }
+              price: { $ref: "#/components/schemas/Money", description: "What was received (lines 213, 217)." }
+              fees: { $ref: "#/components/schemas/Money", description: "Line 214." }
+              portfolio: { $ref: "#/components/schemas/Money", description: "Value of all the crypto held just before (line 212)." }
+              acquisition: { $ref: "#/components/schemas/Money", description: "Acquisition price not used yet (line 223)." }
+              capitalShare: { $ref: "#/components/schemas/Money", description: "acquisition × price / portfolio (the next lines' 221)." }
+              gain: { $ref: "#/components/schemas/Money", description: "Line 224." }
+        total:
+          type: object
+          required: [disposals, gain, exempt, tax, rate]
+          properties:
+            disposals: { $ref: "#/components/schemas/Money" }
+            gain: { $ref: "#/components/schemas/Money" }
+            exempt: { type: boolean, description: "The year's disposals total 305 € or less." }
+            tax: { $ref: "#/components/schemas/Money", description: "An estimate." }
+            rate: { type: string, examples: ["0.314"] }
+        notes:
+          type: array
+          items: { type: string }
