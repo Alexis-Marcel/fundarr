@@ -24,6 +24,9 @@ type Fake struct {
 	ApproveAfter int
 	// Decline: the user declines in the app.
 	Decline bool
+	// Claimed: once scanned and approved, the QR challenge answers CLAIMED
+	// with no process to follow, the cookies being the session.
+	Claimed bool
 	// TooMany: the sign-in answers 429.
 	TooMany bool
 	// NoSocket: the websocket refuses.
@@ -145,6 +148,11 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 		f.polls[id]++
 		if f.polls[id] < 2 {
 			reply(w, map[string]any{"status": "PENDING", "qrCodePayload": fmt.Sprintf("trqr://challenge/%d", f.polls[id]+1)})
+			return
+		}
+		if f.Claimed {
+			f.giveSession(w)
+			reply(w, map[string]any{"status": "CLAIMED"})
 			return
 		}
 		if f.scanned[id] == "" {

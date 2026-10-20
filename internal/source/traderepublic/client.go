@@ -350,6 +350,7 @@ type process struct {
 	Challenge string    `json:"challenge,omitempty"` // QR challenge id
 	QR        string    `json:"qr,omitempty"`
 	Code      bool      `json:"code,omitempty"` // an authenticator code is asked
+	Seen      string    `json:"seen,omitempty"` // the last status Trade Republic gave, logged once
 	Expires   time.Time `json:"expires"`
 }
 
@@ -363,6 +364,21 @@ type processAnswer struct {
 	ChallengeID        string          `json:"challengeId"`
 	ChallengeExpiresAt json.RawMessage `json:"challengeExpiresAt"`
 	QRCodePayload      string          `json:"qrCodePayload"`
+}
+
+// is tells whether Trade Republic gave this status.
+func (p processAnswer) is(status string) bool {
+	return strings.EqualFold(p.Status, status) || strings.EqualFold(p.State, status)
+}
+
+// seen logs each new status once: an unknown one keeps the sign-in waiting
+// rather than stopping it, and the log tells what to teach Fundarr.
+func (c *client) seen(p *process, a processAnswer) {
+	st := strings.TrimSpace(a.Status + " " + a.State)
+	if st != "" && st != p.Seen {
+		p.Seen = st
+		c.logf("sign-in status: %s", st)
+	}
 }
 
 // done: the user approved.
@@ -386,8 +402,6 @@ func (p processAnswer) failed() string {
 			return "the sign-in was declined in the app"
 		case "EXPIRED", "TIMEOUT", "GONE":
 			return "the sign-in was not approved in time"
-		default:
-			return "the sign-in stopped (" + u + ")"
 		}
 	}
 	return ""
@@ -464,11 +478,19 @@ func (c *client) poll(ctx context.Context, p *process) (bool, error) {
 		if a.QRCodePayload != "" {
 			p.QR = a.QRCodePayload
 		}
-		if msg := a.failed(); msg != "" {
-			return false, errors.New("Trade Republic: " + msg)
-		}
+		c.seen(p, a)
 		if a.ProcessID == "" {
-			return a.done(), nil
+			if msg := a.failed(); msg != "" {
+				return false, errors.New("Trade Republic: " + msg)
+			}
+			// Approved in the app without a process to follow ("CLAIMED"):
+			// the cookies may already be the session.
+			if a.done() || a.is("CLAIMED") {
+				if _, err := c.account(ctx); err == nil {
+					return true, nil
+				}
+			}
+			return false, nil
 		}
 		p.ID = a.ProcessID
 		c.logf("QR code scanned")
@@ -477,6 +499,7 @@ func (c *client) poll(ctx context.Context, p *process) (bool, error) {
 	if err := c.do(ctx, http.MethodGet, "/api/v2/auth/web/login/processes/"+url.PathEscape(p.ID), nil, &a, nil); err != nil {
 		return false, err
 	}
+	c.seen(p, a)
 	if msg := a.failed(); msg != "" {
 		return false, errors.New("Trade Republic: " + msg)
 	}
