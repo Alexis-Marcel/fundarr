@@ -85,6 +85,48 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/v1/changes:
+    get:
+      operationId: listChanges
+      summary: What changed in the history, to keep your own copy
+      description: |
+        Without `after`: every activity (a first copy). With the `cursor` of
+        the previous answer: what was added, rewritten or removed since, in
+        order. Apply the changes, keep the cursor, call again while `more`
+        is true. An activity appears once, in its latest state; removing an
+        id you do not have is a no-op. `cost` and `currency` are left out.
+      parameters:
+        - { name: after, in: query, description: "The `cursor` of a previous answer.", schema: { type: string } }
+        - name: limit
+          in: query
+          description: Changes per page.
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 1000 }
+      responses:
+        "200":
+          description: One page of changes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changes, cursor, more]
+                properties:
+                  changes:
+                    type: array
+                    items: { $ref: "#/components/schemas/Change" }
+                  cursor:
+                    type: string
+                    description: "Opaque. Pass it as `after` next time, even when `changes` is empty."
+                  more:
+                    type: boolean
+                    description: More changes follow right away.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410":
+          description: "The cursor is too old (or from another Fundarr): drop your copy and start again without `after`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/holdings:
     get:
       operationId: listHoldings
@@ -208,6 +250,34 @@ paths:
             application/yaml:
               schema: { type: string }
 
+webhooks:
+  changes:
+    post:
+      operationId: changesNotification
+      summary: The history changed
+      description: |
+        Sent to an app's notify URL (Apps → the app → Notify) after changes,
+        best effort: a few retries, and bursts are told once. It carries no
+        data: read `/api/v1/changes` from your cursor. Check the
+        `Fundarr-Signature` header, `t=<unix seconds>,v1=<hex>`, where v1 is
+        HMAC-SHA256 of `<t>.<body>` with the app's secret.
+      security: []
+      parameters:
+        - { name: Fundarr-Signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event, cursor]
+              properties:
+                event: { type: string, enum: [changes] }
+                cursor: { type: string, description: The feed's cursor after these changes. }
+      responses:
+        "200":
+          description: Any 2xx counts as received.
+
 components:
   securitySchemes:
     token:
@@ -306,6 +376,19 @@ components:
         currency: { type: string }
         transferWith: { type: string, description: "The other side of a move between two of your sources." }
         correction: { type: boolean, description: "Added by Fundarr's balance check, not by the platform." }
+
+    Change:
+      type: object
+      required: [op, id]
+      properties:
+        op:
+          type: string
+          enum: [upsert, remove]
+          description: "`upsert`: add or replace the activity. `remove`: delete it."
+        id: { type: string }
+        activity:
+          $ref: "#/components/schemas/Activity"
+          description: "Upserts only: the activity, without `cost` and `currency`."
 
     Portfolio:
       type: object

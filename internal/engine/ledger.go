@@ -94,6 +94,7 @@ func (e *Engine) Readjust(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	defer e.changed()
 	_, _, err = e.Adjust(ctx, ent)
 	return err
 }
@@ -179,6 +180,7 @@ func (e *Engine) Reclassify(ctx context.Context, sourceID, activityID string, r 
 	rand.Read(b)
 	a.NativeID = model.ManualPrefix + hex.EncodeToString(b)
 	a.SourceID, a.ID = sourceID, model.ActivityID(sourceID, a.NativeID)
+	defer e.changed()
 	if _, err := e.Store.AddActivities(ctx, []model.Activity{a}); err != nil {
 		return nil, err
 	}
@@ -209,6 +211,7 @@ func (e *Engine) DeleteManual(ctx context.Context, sourceID, activityID string) 
 	if !strings.HasPrefix(a.NativeID, model.ManualPrefix) {
 		return errors.New("only activities entered in Fundarr can be deleted")
 	}
+	defer e.changed()
 	if err := e.Store.DeleteActivities(ctx, sourceID, []string{activityID}); err != nil {
 		return err
 	}

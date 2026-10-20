@@ -186,6 +186,7 @@ func (s *Server) putTransfer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 422, err.Error())
 		return
 	}
+	s.changed()
 	writeJSON(w, map[string]bool{"ok": true})
 }
 

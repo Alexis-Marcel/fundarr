@@ -208,6 +208,7 @@ export interface APIToken {
   name: string;
   created: string;
   lastUsed: string;
+  notifyUrl: string; // told after each change, "" when not
 }
 
 export interface Session {
@@ -271,6 +272,7 @@ export const api = {
   tokens: () => call<APIToken[]>("GET", "/api/tokens"),
   createToken: (name: string) => call<{ token: string; info: APIToken }>("POST", "/api/tokens", { name }),
   deleteToken: (id: string) => call<{ ok: boolean }>("DELETE", `/api/tokens/${id}`, {}),
+  setNotify: (id: string, url: string) => call<{ secret: string }>("PUT", `/api/tokens/${id}/notify`, { url }),
   detect: (kind: string, value: string) => call<Detected>("POST", `/api/kinds/${kind}/detect`, { value }),
   testSource: (in_: EntityInput & { id?: string }) => call<{ ok: boolean }>("POST", "/api/sources/test", in_),
   updateSource: (id: string, in_: EntityInput) => call<Source>("PUT", `/api/sources/${id}`, in_),

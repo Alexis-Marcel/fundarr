@@ -34,6 +34,9 @@ type Engine struct {
 	Prices *price.Service
 	// Now is replaceable in tests.
 	Now func() time.Time
+	// OnChange, when set, is called after the history may have changed
+	// (a sync, an import, a correction rewritten). It must not block.
+	OnChange func()
 
 	mu      sync.Mutex
 	running map[string]bool
@@ -98,6 +101,12 @@ func (e *Engine) Secrets(ent *store.Entity) (map[string]string, error) {
 		return nil, err
 	}
 	return sec, json.Unmarshal(raw, &sec)
+}
+
+func (e *Engine) changed() {
+	if e.OnChange != nil {
+		e.OnChange()
+	}
 }
 
 func (e *Engine) lock(id string) bool {
@@ -216,6 +225,7 @@ func (e *Engine) sync0(ctx context.Context, id string, full bool) (*SyncResult, 
 	}
 	_ = e.Store.EndRun(ctx, runID, err == nil, summary, log.String())
 	e.Log.Info("sync", "source", ent.Name, "summary", summary)
+	e.changed()
 	if err != nil {
 		return res, err
 	}
@@ -403,6 +413,7 @@ func (e *Engine) Import(ctx context.Context, id, name string, data []byte) (*Imp
 	if err != nil {
 		return nil, err
 	}
+	defer e.changed()
 	if _, _, err := e.Adjust(ctx, ent); err != nil {
 		return nil, err
 	}

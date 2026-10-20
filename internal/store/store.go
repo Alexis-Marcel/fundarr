@@ -135,7 +135,35 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 	created   INTEGER NOT NULL,
 	last_used INTEGER
 );
+CREATE TABLE IF NOT EXISTS feed (
+	seq  INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused
+	id   TEXT NOT NULL UNIQUE,              -- activity id
+	hash TEXT NOT NULL,                     -- sha256 of data
+	data TEXT NOT NULL,                     -- the activity as apps see it, '' once removed
+	at   INTEGER NOT NULL
+);
 `
+
+// columns added after a table was first created: table → column → definition.
+var columns = []struct{ table, column, def string }{
+	{"api_tokens", "notify_url", "TEXT NOT NULL DEFAULT ''"},
+	{"api_tokens", "notify_secret", "BLOB"},
+}
+
+func migrate(db *sql.DB) error {
+	for _, c := range columns {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c.table, c.column).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.column + ` ` + c.def); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)")
@@ -144,6 +172,10 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("schema: %w", err)
+	}
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
@@ -891,6 +923,8 @@ type APIToken struct {
 	Name     string    `json:"name"`
 	Created  time.Time `json:"created"`
 	LastUsed time.Time `json:"lastUsed"`
+	// NotifyURL, when set, is told after each change to the history.
+	NotifyURL string `json:"notifyUrl"`
 }
 
 func tokenHash(token string) string {
@@ -913,7 +947,7 @@ func (s *Store) CreateAPIToken(ctx context.Context, name string) (APIToken, stri
 }
 
 func (s *Store) APITokens(ctx context.Context) ([]APIToken, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created, last_used FROM api_tokens ORDER BY created`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created, last_used, notify_url FROM api_tokens ORDER BY created`)
 	if err != nil {
 		return nil, err
 	}
@@ -922,7 +956,7 @@ func (s *Store) APITokens(ctx context.Context) ([]APIToken, error) {
 	for rows.Next() {
 		var t APIToken
 		var created, used sql.NullInt64
-		if err := rows.Scan(&t.ID, &t.Name, &created, &used); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &created, &used, &t.NotifyURL); err != nil {
 			return nil, err
 		}
 		t.Created, t.LastUsed = fromMs(created), fromMs(used)
@@ -934,6 +968,42 @@ func (s *Store) APITokens(ctx context.Context) ([]APIToken, error) {
 func (s *Store) DeleteAPIToken(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM api_tokens WHERE id = ?`, id)
 	return err
+}
+
+// SetNotify sets where a token's app is told about changes, with the
+// sealed secret that signs the calls; url "" stops it.
+func (s *Store) SetNotify(ctx context.Context, id, url string, secret []byte) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET notify_url = ?, notify_secret = ? WHERE id = ?`, url, secret, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// NotifyTarget is an app to tell about changes.
+type NotifyTarget struct {
+	ID, URL string
+	Secret  []byte // sealed
+}
+
+func (s *Store) NotifyTargets(ctx context.Context) ([]NotifyTarget, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, notify_url, notify_secret FROM api_tokens WHERE notify_url != '' ORDER BY created`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NotifyTarget
+	for rows.Next() {
+		var t NotifyTarget
+		if err := rows.Scan(&t.ID, &t.URL, &t.Secret); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // CheckAPIToken says whether token is a live one, and marks it used.

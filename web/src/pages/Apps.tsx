@@ -165,6 +165,13 @@ function CopyField({ label, value, code }: { label: string; value: string; code?
 
 function ReadAppCard({ t, onChanged }: { t: APIToken; onChanged: () => void }) {
   const used = !isZeroTime(t.lastUsed);
+  const [notifying, setNotifying] = useState(false);
+  let host = "";
+  try {
+    host = t.notifyUrl ? new URL(t.notifyUrl).host : "";
+  } catch {
+    host = t.notifyUrl;
+  }
   return (
     <article className="card">
       <header className="card-head">
@@ -175,10 +182,14 @@ function ReadAppCard({ t, onChanged }: { t: APIToken; onChanged: () => void }) {
             <StatusDot health={used ? "ok" : "idle"} />
             <span className="clip">
               Reads Fundarr · added {day(t.created)} · {used ? `used ${ago(t.lastUsed)}` : "not used yet"}
+              {host && ` · notifies ${host}`}
             </span>
           </p>
         </div>
         <div className="detail-actions">
+          <button className="btn" onClick={() => setNotifying(true)}>
+            Notify
+          </button>
           <button
             className="btn"
             onClick={async () => {
@@ -191,7 +202,83 @@ function ReadAppCard({ t, onChanged }: { t: APIToken; onChanged: () => void }) {
           </button>
         </div>
       </header>
+      {notifying && (
+        <Modal title={`Notify ${t.name}`} onClose={() => setNotifying(false)}>
+          <NotifyForm
+            t={t}
+            onSaved={onChanged}
+            onDone={() => {
+              setNotifying(false);
+              onChanged();
+            }}
+          />
+        </Modal>
+      )}
     </article>
+  );
+}
+
+/** Where Fundarr posts when the history changes; the secret is shown once. */
+function NotifyForm({ t, onSaved, onDone }: { t: APIToken; onSaved: () => void; onDone: () => void }) {
+  const [url, setUrl] = useState(t.notifyUrl);
+  const [secret, setSecret] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async (u: string) => {
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api.setNotify(t.id, u);
+      onSaved();
+      if (r.secret) setSecret(r.secret);
+      else onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (secret)
+    return (
+      <div className="entity-form">
+        <CopyField label="Secret" value={secret} />
+        <p className="muted small">Signs each call (Fundarr-Signature header). Shown only now.</p>
+        <div className="form-actions">
+          <button className="btn btn-primary" onClick={onDone}>
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  return (
+    <form
+      className="entity-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save(url.trim());
+      }}
+    >
+      <p className="setup">Fundarr calls this address when your history changes.</p>
+      <label className="field">
+        <span>Notify URL</span>
+        <input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://app.example.com/fundarr" maxLength={500} autoFocus />
+      </label>
+      {err && (
+        <p className="notice notice-error" role="status">
+          {err}
+        </p>
+      )}
+      <div className="form-actions">
+        {t.notifyUrl && (
+          <button type="button" className="btn" disabled={busy} onClick={() => save("")}>
+            Stop
+          </button>
+        )}
+        <button className="btn btn-primary" disabled={busy || !url.trim()}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </form>
   );
 }
 

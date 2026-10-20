@@ -85,7 +85,9 @@ func setupWith(t *testing.T, ac AuthConfig) (*httptest.Server, *engine.Engine, *
 	eng := engine.New(st, box, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ac.SessionKey = box.Key("s")
 	ac.Credentials = st
-	srv, err := New(context.Background(), Config{Engine: eng, Version: "test",
+	bg, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(context.Background(), Config{Engine: eng, Version: "test", Background: bg,
 		Static: fstest.MapFS{"index.html": {Data: []byte("<html>ui</html>")}, "assets/a.js": {Data: []byte("js")}},
 		Auth:   ac})
 	if err != nil {
