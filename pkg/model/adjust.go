@@ -29,9 +29,13 @@ func Adjustments(acts []Activity, gaps []Gap, now time.Time) []Activity {
 		if !at.Equal(now) {
 			when = fmt.Sprint(at.UnixMilli())
 		}
+		key := g.Asset.Key()
+		if g.Account != "" {
+			key += "@" + g.Account
+		}
 		a := Activity{
-			NativeID: fmt.Sprintf("%s%s:%s:%s:%s", AdjustPrefix, g.Asset.Key(), side, when, q.String()),
-			Time:     at, Type: Adjustment, Side: side, Base: Amount{Asset: g.Asset, Qty: q}, Note: why,
+			NativeID: fmt.Sprintf("%s%s:%s:%s:%s", AdjustPrefix, key, side, when, q.String()),
+			Time:     at, Account: g.Account, Type: Adjustment, Side: side, Base: Amount{Asset: g.Asset, Qty: q}, Note: why,
 		}
 		out = append(out, a)
 	}
@@ -43,6 +47,9 @@ func Adjustments(acts []Activity, gaps []Gap, now time.Time) []Activity {
 			run, low := decimal.Zero, decimal.Zero
 			var first time.Time
 			for _, a := range sorted {
+				if !g.Pooled && a.Account != g.Account {
+					continue
+				}
 				d := delta(a, g.Asset)
 				if d.IsZero() {
 					continue

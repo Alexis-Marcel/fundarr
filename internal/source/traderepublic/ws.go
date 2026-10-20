@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,7 +31,8 @@ import (
 // Topics read: accountPairs (each account: its securities and cash account
 // numbers, productType DEFAULT or TAX_WRAPPER for the PEA),
 // compactPortfolioByType {secAccNo} (positions: instrumentId = ISIN, netSize),
-// cash (each cash account: amount and currency).
+// cash (no parameter: amount and currency, per cash account or not; see
+// cashBalances).
 
 var connectMsg = map[string]string{"locale": locale, "platformId": "webtrading", "platformVersion": "chrome - 146.0.0",
 	"clientId": "app.traderepublic.com", "clientVersion": "5582"}
@@ -312,8 +314,10 @@ func parseCash(raw json.RawMessage) []cashLine {
 	return out
 }
 
-// balances reads what every account holds.
-func (c *client) balances(ctx context.Context) ([]model.Balance, error) {
+// balances reads what every account holds. hist is each account's cash
+// in the export just downloaded (label → currency → amount; nil when
+// none): it tells how to read a cash answer that does not name accounts.
+func (c *client) balances(ctx context.Context, hist map[string]map[string]decimal.Decimal) ([]model.Balance, error) {
 	w, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
@@ -337,12 +341,8 @@ func (c *client) balances(ctx context.Context) ([]model.Balance, error) {
 		accounts = []pairAccount{{SecAccNo: sec, Product: "DEFAULT"}}
 	}
 	var out []model.Balance
-	cashOf := map[string]string{} // cash account number → label
 	for _, a := range accounts {
 		lbl := accountLabel(a.Product)
-		if a.CashAccNo != "" {
-			cashOf[a.CashAccNo] = lbl
-		}
 		raw, err := w.sub(ctx, map[string]any{"type": "compactPortfolioByType", "secAccNo": a.SecAccNo})
 		if err != nil {
 			return nil, err
@@ -362,17 +362,7 @@ func (c *client) balances(ctx context.Context) ([]model.Balance, error) {
 	}
 	cash := parseCash(raw)
 	c.logf("cash: %d line(s)", len(cash))
-	for _, l := range cash {
-		lbl, ok := cashOf[l.Account]
-		if !ok {
-			// Without the pairs' cash numbers, the cash is the main account's.
-			if len(cashOf) > 0 && l.Account != "" {
-				c.logf("cash: an account not in accountPairs, counted in the main one")
-			}
-			lbl = ""
-		}
-		out = append(out, model.Balance{Account: lbl, Amount: l.Amount})
-	}
+	out = append(out, cashBalances(accounts, cash, hist, c.logf)...)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Account != out[j].Account {
 			return out[i].Account < out[j].Account
@@ -380,4 +370,158 @@ func (c *client) balances(ctx context.Context) ([]model.Balance, error) {
 		return out[i].Asset.Key() < out[j].Asset.Key()
 	})
 	return out, nil
+}
+
+// cashBalances puts the cash answer in the accounts it belongs to.
+//
+// The cash topic takes no account: pytr and Sure read it as the session's
+// own account, and Trade Republic may leave the PEA's cash out, give one
+// line per cash account, or one figure for all. So:
+//
+//   - a line naming an account's cash number is that account's;
+//   - a line naming none (or an unknown number) is the one account without
+//     its line, or else the main account's if the export agrees, or else
+//     every account's together (model.AllAccounts: compared summed);
+//   - an account with no line has its cash taken from the history
+//     (Unread), unless the export says the figures are for all accounts.
+//
+// Never is cash moved from one account to another to make them agree.
+func cashBalances(accounts []pairAccount, cash []cashLine, hist map[string]map[string]decimal.Decimal, logf func(string, ...any)) []model.Balance {
+	labelOf := map[string]string{} // cash account number → label
+	var labels []string
+	seenLbl := map[string]bool{}
+	for _, a := range accounts {
+		l := accountLabel(a.Product)
+		if a.CashAccNo != "" {
+			labelOf[a.CashAccNo] = l
+		}
+		if !seenLbl[l] {
+			seenLbl[l] = true
+			labels = append(labels, l)
+		}
+	}
+	got := map[string]map[string]decimal.Decimal{} // label → currency → amount
+	loose := map[string]decimal.Decimal{}          // currency → amount
+	assets := map[string]model.Asset{}
+	add := func(m map[string]decimal.Decimal, a model.Amount) {
+		m[a.Asset.Symbol] = m[a.Asset.Symbol].Add(a.Qty)
+		assets[a.Asset.Symbol] = a.Asset
+	}
+	for _, l := range cash {
+		lbl, ok := labelOf[l.Account]
+		if !ok {
+			add(loose, l.Amount)
+			continue
+		}
+		if got[lbl] == nil {
+			got[lbl] = map[string]decimal.Decimal{}
+		}
+		add(got[lbl], l.Amount)
+	}
+	var missing []string
+	for _, l := range labels {
+		if got[l] == nil {
+			missing = append(missing, l)
+		}
+	}
+	// Where the loose lines go when read account by account.
+	looseTo, looseOK := "", true
+	switch {
+	case len(loose) == 0:
+	case len(missing) == 1:
+		looseTo = missing[0]
+	case slices.Contains(missing, ""):
+		looseTo, looseOK = "", hist != nil // the main account's, if the export agrees
+	default:
+		looseOK = false
+	}
+	split := map[string]map[string]decimal.Decimal{}
+	for l, m := range got {
+		split[l] = m
+	}
+	if len(loose) > 0 && looseOK {
+		split[looseTo] = loose
+	}
+	// The export tells which reading holds: each account's figure is its
+	// cash, or the figures add up to all of it.
+	ccys := map[string]bool{}
+	for k := range assets {
+		ccys[k] = true
+	}
+	for _, m := range hist {
+		for k := range m {
+			ccys[k] = true
+		}
+	}
+	// Read without guessing: every line names its account, or the one
+	// account left without its line is the loose lines'.
+	reliable := len(loose) == 0 || len(missing) == 1
+	perAccount := looseOK
+	if hist != nil && looseOK && !fits(split, hist, ccys) {
+		switch {
+		case fits(map[string]map[string]decimal.Decimal{"": sumOf(got, loose)}, map[string]map[string]decimal.Decimal{"": sumOf(hist, nil)}, ccys):
+			perAccount = false // the figures are for all accounts together
+		default:
+			perAccount = reliable // neither fits: a real gap, read as given
+		}
+	}
+	var out []model.Balance
+	asset := func(k string) model.Asset {
+		if a, ok := assets[k]; ok {
+			return a
+		}
+		return model.CryptoOrFiat(k)
+	}
+	if !perAccount {
+		logf("cash: Trade Republic gave one figure for several accounts: compared summed over them")
+		for k, q := range sumOf(got, loose) {
+			out = append(out, model.Balance{Account: model.AllAccounts, Amount: model.Amount{Asset: asset(k), Qty: q}})
+		}
+		return out
+	}
+	for _, l := range labels {
+		m, ok := split[l]
+		if !ok {
+			logf("cash (%s): not in Trade Republic's answer: taken from the history", accountName(l))
+			unread := map[string]bool{"EUR": true}
+			for k := range hist[l] {
+				unread[k] = true
+			}
+			for k := range unread {
+				out = append(out, model.Balance{Account: l, Amount: model.Amount{Asset: asset(k), Qty: decimal.Zero}, Unread: true})
+			}
+			continue
+		}
+		for k, q := range m {
+			out = append(out, model.Balance{Account: l, Amount: model.Amount{Asset: asset(k), Qty: q}})
+		}
+	}
+	return out
+}
+
+// fits: each account's figure in got is its cash in hist, to the cent.
+func fits(got, hist map[string]map[string]decimal.Decimal, ccys map[string]bool) bool {
+	cent := decimal.New(5, -3)
+	for l, m := range got {
+		for k := range ccys {
+			if m[k].Sub(hist[l][k]).Abs().GreaterThan(cent) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// sumOf adds up every account's cash, and extra.
+func sumOf(m map[string]map[string]decimal.Decimal, extra map[string]decimal.Decimal) map[string]decimal.Decimal {
+	out := map[string]decimal.Decimal{}
+	for k, q := range extra {
+		out[k] = q
+	}
+	for _, x := range m {
+		for k, q := range x {
+			out[k] = out[k].Add(q)
+		}
+	}
+	return out
 }

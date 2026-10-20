@@ -336,6 +336,9 @@ func (e *Engine) sync(ctx context.Context, ent *store.Entity, log *runLog) (*Syn
 	if err != nil {
 		return res, src.State(), fmt.Errorf("balances: %w", err)
 	}
+	if bal, err = e.fillUnread(ctx, ent.ID, bal); err != nil {
+		return res, nil, err
+	}
 	if err := e.Store.PutBalancesFrom(ctx, ent.ID, e.Now(), bal, derived); err != nil {
 		return res, nil, err
 	}
@@ -447,6 +450,35 @@ func (e *Engine) derivedBalances(ctx context.Context, sourceID string) ([]model.
 		}
 		return out[i].Asset.Key() < out[j].Asset.Key()
 	})
+	return out, nil
+}
+
+// fillUnread gives the balances the platform did not say (Unread) what the
+// history adds up to in their account, so they read right; they are not
+// checked.
+func (e *Engine) fillUnread(ctx context.Context, sourceID string, bal []model.Balance) ([]model.Balance, error) {
+	need := false
+	for _, b := range bal {
+		need = need || b.Unread
+	}
+	if !need {
+		return bal, nil
+	}
+	hist, err := e.derivedBalances(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	of := map[string]decimal.Decimal{}
+	for _, h := range hist {
+		of[h.Account+"\x00"+h.Asset.Key()] = h.Qty
+	}
+	out := make([]model.Balance, len(bal))
+	for i, b := range bal {
+		if b.Unread {
+			b.Qty = of[b.Account+"\x00"+b.Asset.Key()]
+		}
+		out[i] = b
+	}
 	return out, nil
 }
 

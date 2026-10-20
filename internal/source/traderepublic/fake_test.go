@@ -33,6 +33,8 @@ type Fake struct {
 	NoSocket bool
 	// Export is the CSV the export downloads.
 	Export string
+	// cash is the cash topic's answer (SetCash); fakeCash when empty.
+	cash string
 
 	mu        sync.Mutex
 	Logins    int // sign-ins started with a phone number
@@ -53,6 +55,13 @@ func NewFake(t testing.TB) *Fake {
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
 	return f
+}
+
+// SetCash changes what the cash topic answers (one of the Cash* shapes).
+func (f *Fake) SetCash(answer string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cash = answer
 }
 
 // Revoke ends every session, as Trade Republic does after a day.
@@ -239,6 +248,10 @@ var (
 func (f *Fake) socket(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	ok := f.signedIn(r) && !f.NoSocket
+	cash := f.cash
+	if cash == "" {
+		cash = fakeCash
+	}
 	f.Requests = append(f.Requests, "WS /")
 	f.mu.Unlock()
 	if !ok {
@@ -281,7 +294,7 @@ func (f *Fake) socket(w http.ResponseWriter, r *http.Request) {
 				c.Write(ctx, websocket.MessageText, []byte(id+` E {"errors":[{"errorCode":"NOT_FOUND"}]}`))
 			}
 		case "cash":
-			c.Write(ctx, websocket.MessageText, []byte(id+" A "+fakeCash))
+			c.Write(ctx, websocket.MessageText, []byte(id+" A "+cash))
 		default:
 			c.Write(ctx, websocket.MessageText, []byte(id+` E {"errors":[{"errorCode":"UNKNOWN_TOPIC"}]}`))
 		}
@@ -290,3 +303,37 @@ func (f *Fake) socket(w http.ResponseWriter, r *http.Request) {
 
 // FakeExport is an export matching the fake's balances.
 func FakeExport() string { return fakeExport() }
+
+// The PEA dividend: 5.40 € on TotalEnergies, booked in the PEA, its cash
+// staying there.
+var peaDividend = line{"datetime": "2026-10-02T00:00:00.000000Z", "account_type": "TAX_WRAPPER", "type": "DIVIDEND", "asset_class": "STOCK",
+	"name": "TotalEnergies", "symbol": "FR0000120271", "shares": "3", "amount": "5.40", "description": "Cash Dividend for ISIN FR0000120271",
+	"transaction_id": "t-pea-div"}
+
+// FakeExportPEADividend is FakeExport with the PEA dividend.
+func FakeExportPEADividend() string {
+	var lines []line
+	for _, l := range fixture {
+		if l["account_type"] != "JUNIOR" {
+			lines = append(lines, l)
+		}
+	}
+	return render(append(lines, peaDividend), ",", false, false)
+}
+
+// Shapes the cash topic may answer in, with the PEA dividend in: the main
+// account holds -38.47 €, the PEA 75.40 €.
+var (
+	// CashEach: a line per cash account.
+	CashEach = `[{"accountNumber":"CASH1","currencyId":"EUR","amount":-38.47},{"accountNumber":"CASH2","currencyId":"EUR","amount":75.4}]`
+	// CashMainOnly: the session's account alone, the PEA left out.
+	CashMainOnly = `[{"accountNumber":"CASH1","currencyId":"EUR","amount":-38.47}]`
+	// CashMainNoNumber: the main account's, naming no account.
+	CashMainNoNumber = `{"currencyId":"EUR","amount":-38.47}`
+	// CashTotal: one figure for both, naming no account.
+	CashTotal = `[{"currencyId":"EUR","amount":36.93}]`
+	// CashTotalAsMain: one figure for both, under the main account's number.
+	CashTotalAsMain = `[{"accountNumber":"CASH1","currencyId":"EUR","amount":36.93}]`
+	// CashPEAUnknownNumber: the PEA's line under a number accountPairs does not give.
+	CashPEAUnknownNumber = `[{"accountNumber":"CASH1","currencyId":"EUR","amount":-38.47},{"accountNumber":"PEA-9","currencyId":"EUR","amount":75.4}]`
+)

@@ -336,9 +336,10 @@ components:
       type: object
       required: [account, asset, qty]
       properties:
-        account: { type: string, description: "Sub-account, empty for the main one." }
+        account: { type: string, description: "Sub-account, empty for the main one; \"*\" when the platform gave one figure for all the source's accounts." }
         asset: { $ref: "#/components/schemas/Asset" }
         qty: { $ref: "#/components/schemas/Decimal" }
+        unread: { type: boolean, description: "The platform did not say this one: qty is what the history adds up to." }
 
     Source:
       type: object

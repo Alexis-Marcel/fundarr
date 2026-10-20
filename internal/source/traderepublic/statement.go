@@ -277,6 +277,15 @@ type statement struct {
 	unknown map[string]int
 	skipped int
 	paired  int
+	// outs: activities where a corporate action takes shares away (in
+	// Quote for an exchange), to sweep the rounding left behind.
+	outs  []outRef
+	swept int
+}
+
+type outRef struct {
+	i     int
+	quote bool
 }
 
 func (s *statement) emit(r *row, raw string, suffix string, a model.Activity) {
@@ -534,7 +543,50 @@ func (s *statement) corporate(r *row, raw string) {
 		zero := model.Amount{Asset: model.CryptoOrFiat(r.ccy), Qty: decimal.Zero}
 		s.emit(r, raw, "", model.Activity{Type: model.Trade, Side: model.Sell, Base: model.Amount{Asset: r.asset(), Qty: r.shares.Abs()}, Quote: &zero,
 			Note: r.note(label(t))})
+		s.outs = append(s.outs, outRef{i: len(s.acts) - 1})
 		s.byNet(r, raw, "", r.note(label(t)))
+	}
+}
+
+// sweepDust closes a position a corporate action meant to empty (an
+// exchange for new shares, a reverse split to a new ISIN, a removal) but
+// left a crumb of: at most a thousandth of a share and of what it took,
+// with nothing after it, is a rounding residue, not shares still held. It
+// goes with the shares taken. A split of the same ISIN is left alone: what
+// it leaves is the position.
+func (s *statement) sweepDust() {
+	limit, rel := decimal.New(1, -3), decimal.New(1, -3)
+	for _, o := range s.outs {
+		a := &s.acts[o.i]
+		taken := &a.Base
+		if o.quote {
+			taken = a.Quote
+		}
+		key := taken.Asset.Key()
+		left, later := decimal.Zero, false
+		for j, b := range s.acts {
+			if b.Account != a.Account {
+				continue
+			}
+			d := model.Holdings([]model.Activity{b})[key].Qty
+			if d.IsZero() {
+				continue
+			}
+			if j > o.i {
+				later = true
+				break
+			}
+			left = left.Add(d)
+		}
+		if later || !left.IsPositive() || left.GreaterThan(limit) || left.GreaterThan(taken.Qty.Mul(rel)) {
+			continue
+		}
+		taken.Qty = taken.Qty.Add(left)
+		if a.Note != "" {
+			a.Note += "; "
+		}
+		a.Note += "with the rounding left over (" + left.String() + ")"
+		s.swept++
 	}
 }
 
@@ -568,7 +620,8 @@ func (s *statement) pair(rows []*row) {
 	}
 	groups := map[key][]*row{}
 	for _, r := range rows {
-		if r.category == "CORPORATE_ACTION" && r.hasAsset() && !splitTypes[r.typ] && !redemptionTypes[r.typ] {
+		// A split may come so too, when the ISIN changes.
+		if r.category == "CORPORATE_ACTION" && r.hasAsset() && !redemptionTypes[r.typ] {
 			k := key{r.time.Unix(), r.account, r.typ}
 			groups[k] = append(groups[k], r)
 		}
@@ -634,6 +687,7 @@ func importStatement(data []byte) (*source.Statement, error) {
 			old := model.Amount{Asset: r.from.asset(), Qty: r.from.shares.Abs()}
 			st.emit(r, raw, "", model.Activity{Type: model.Trade, Side: model.Buy, Base: model.Amount{Asset: r.asset(), Qty: r.shares.Abs()},
 				Quote: &old, Note: r.note(label(r.typ))})
+			st.outs = append(st.outs, outRef{i: len(st.acts) - 1, quote: true})
 			st.byNet(r, raw, "", r.note(label(r.typ)))
 			st.byNet(r.from, raws[r.from.line], "", r.from.note(label(r.from.typ)))
 		case r.done:
@@ -641,6 +695,7 @@ func importStatement(data []byte) (*source.Statement, error) {
 			st.row(r, raw)
 		}
 	}
+	st.sweepDust()
 	out := &source.Statement{From: rows[0].time, To: rows[len(rows)-1].time, Activities: st.acts}
 	for a := range accounts {
 		out.Accounts = append(out.Accounts, a)
@@ -649,6 +704,9 @@ func importStatement(data []byte) (*source.Statement, error) {
 	out.Notes = append(out.Notes, fmt.Sprintf("%d lines read, %d activities", len(rows), len(st.acts)))
 	if st.paired > 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("%d dividend(s) booked again by Trade Republic: the first booking and its reversal cancel out", st.paired))
+	}
+	if st.swept > 0 {
+		out.Notes = append(out.Notes, fmt.Sprintf("%d position(s) closed with the rounding a corporate action left (a reverse split's)", st.swept))
 	}
 	if st.skipped > 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("%d corporate action line(s) left out: their cash line tells the same", st.skipped))
@@ -678,6 +736,23 @@ func importStatement(data []byte) (*source.Statement, error) {
 		}
 	}
 	return out, nil
+}
+
+// exportCash is each account's cash in an export (label → currency →
+// amount), what its lines add up to; nil when it does not read.
+func exportCash(data []byte) map[string]map[string]decimal.Decimal {
+	rows, _, err := parse(data)
+	if err != nil {
+		return nil
+	}
+	out := map[string]map[string]decimal.Decimal{}
+	for _, r := range rows {
+		if out[r.account] == nil {
+			out[r.account] = map[string]decimal.Decimal{}
+		}
+		out[r.account][r.ccy] = out[r.account][r.ccy].Add(r.net())
+	}
+	return out
 }
 
 // accountName is how an account is called in messages.

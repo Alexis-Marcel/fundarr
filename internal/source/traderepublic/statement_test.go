@@ -337,3 +337,41 @@ func TestAccountLabel(t *testing.T) {
 		}
 	}
 }
+
+// A reverse split to a new ISIN that takes back all but a crumb of the old
+// shares: the crumb is rounding, the old position closes and its cost goes
+// to the new shares. A split of the same ISIN keeps what it leaves.
+func TestReverseSplitDust(t *testing.T) {
+	lines := []line{
+		{"datetime": "2025-01-02T09:00:00Z", "type": "TRANSFER_INBOUND", "amount": "100", "transaction_id": "in"},
+		{"datetime": "2025-01-03T09:00:00Z", "category": "TRADING", "type": "BUY", "asset_class": "STOCK", "name": "Atos", "symbol": "FR001400THA4",
+			"shares": "12345.6789", "price": "0.0081", "amount": "-100.00", "transaction_id": "buy"},
+		{"datetime": "2025-04-24T00:00:00Z", "category": "CORPORATE_ACTION", "type": "REVERSE_SPLIT", "asset_class": "STOCK", "name": "Atos",
+			"symbol": "FR001400THA4", "shares": "-12345.6788", "transaction_id": "rs-out"},
+		{"datetime": "2025-04-24T00:00:00Z", "category": "CORPORATE_ACTION", "type": "REVERSE_SPLIT", "asset_class": "STOCK", "name": "Atos",
+			"symbol": "FR001400X2S4", "shares": "1.23456788", "transaction_id": "rs-in"},
+		{"datetime": "2025-05-01T09:00:00Z", "category": "TRADING", "type": "BUY", "asset_class": "STOCK", "name": "Tiny", "symbol": "US0000000001",
+			"shares": "1.0004", "price": "0", "amount": "0", "transaction_id": "tiny"},
+		{"datetime": "2025-06-01T00:00:00Z", "category": "CORPORATE_ACTION", "type": "REVERSE_SPLIT", "asset_class": "STOCK", "name": "Tiny",
+			"symbol": "US0000000001", "shares": "-1", "transaction_id": "tiny-rs"},
+	}
+	st, err := importStatement([]byte(render(lines, ",", false, false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := held(st.Activities, "")
+	if _, ok := h["security:FR001400THA4"]; ok {
+		t.Fatalf("old Atos left: %v", h)
+	}
+	if h["security:FR001400X2S4"].String() != "1.23456788" || h["security:US0000000001"].String() != "0.0004" {
+		t.Fatalf("held %v", h)
+	}
+	for _, a := range st.Activities {
+		if a.Base.Asset.Symbol == "FR001400X2S4" && (a.Quote == nil || a.Quote.Asset.Symbol != "FR001400THA4" || a.Quote.Qty.String() != "12345.6789") {
+			t.Fatalf("new Atos for %+v", a.Quote)
+		}
+	}
+	if !strings.Contains(strings.Join(st.Notes, "\n"), "1 position(s) closed") {
+		t.Fatalf("notes %v", st.Notes)
+	}
+}

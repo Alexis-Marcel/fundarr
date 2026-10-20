@@ -24,6 +24,7 @@ import (
 
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/pkg/model"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -101,6 +102,8 @@ type Source struct {
 	st               state
 	log              func(string, ...any)
 	login            *process // a sign-in waiting for the user
+	// hist: each account's cash in the export this run downloaded.
+	hist map[string]map[string]decimal.Decimal
 }
 
 // state is kept between runs, sealed by the engine (it holds the session).
@@ -319,6 +322,7 @@ func (s *Source) FetchStatement(ctx context.Context, f source.Fetch) (string, []
 		return "", nil, err
 	}
 	s.st.Cookies = s.c.cookies()
+	s.hist = exportCash(data)
 	return "Trade Republic (synced)", data, nil
 }
 
@@ -331,7 +335,7 @@ func (s *Source) Balances(ctx context.Context) ([]model.Balance, error) {
 	if !hasSession(s.st.Cookies) {
 		return nil, source.ErrLogin
 	}
-	b, err := s.c.balances(ctx)
+	b, err := s.c.balances(ctx, s.hist)
 	if errors.Is(err, source.ErrLogin) {
 		s.forget()
 		return nil, err
