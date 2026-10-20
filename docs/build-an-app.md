@@ -37,6 +37,8 @@ A token reads your whole history. Never put it in a web page or a mobile app: an
 
 In Fundarr, **Apps → Add app → Other app**: name it, then copy the API URL and the token, shown once. Remove the app there to revoke its token.
 
+When your app runs in Docker on the same server, reach Fundarr by its container name (`http://fundarr:9494`) on a shared network rather than through its public address: a reverse proxy that only lets your home network or VPN in sees the app as a stranger and blocks it. To find Fundarr without asking, an app can try those addresses: `GET /api/v1/openapi.yaml` needs no token and answers Fundarr's API description.
+
 ## Keep your own copy
 
 An app with its own database stays in sync with [`/api/v1/changes`](api.md#get-apiv1changes):

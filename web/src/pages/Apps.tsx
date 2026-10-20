@@ -119,6 +119,9 @@ function ReadAppMade({ made, cairn, url, onDone }: { made: { name: string; token
     <div className="entity-form">
       {cairn && <p className="setup">In Cairn: Réglages → Synchroniser avec Fundarr.</p>}
       <CopyField label="API URL" value={base} />
+      <p className="muted small">
+        App in Docker next to Fundarr? Use <code>http://fundarr:9494/api/v1</code>: a proxy in front of Fundarr may block it.
+      </p>
       <CopyField label="Token" value={made.token} />
       <CopyField label="Try it" value={`curl -H "Authorization: Bearer ${made.token}" ${base}/portfolio`} code />
       <p className="muted small">The token is shown only now. Keep it on a server, never in a web page.</p>
