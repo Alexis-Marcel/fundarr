@@ -96,6 +96,10 @@ The read API serves every activity, the holdings, the portfolio and its history,
 
 More in [How it works](docs/how-it-works.md).
 
+## Versions
+
+Releases are tagged (`v0.1.0`) and published as images with the same tag (`ghcr.io/alexis-marcel/fundarr:0.1`); `latest` follows `main`. The API stays compatible within `/api/v1` ([details](docs/api.md#stability)); [release notes](https://github.com/Alexis-Marcel/fundarr/releases).
+
 ## Configuration
 
 None is needed. Sign-in (password, OpenID Connect, reverse proxy), the data folder and the other settings are in [docs/configuration.md](docs/configuration.md). Back up `/data` whole: it holds the database and the key that encrypts your API keys.
