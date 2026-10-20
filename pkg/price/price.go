@@ -1,7 +1,8 @@
 // Package price values assets on a given day, in a given currency, from
-// free public market data: Binance and OKX daily candles for crypto, the
-// European Central Bank's reference rates (through Frankfurter) between
-// currencies. No account or key is needed. Prices are kept in memory and,
+// free public market data: Binance and OKX daily candles for crypto,
+// justETF's daily quotes for stocks and ETFs by ISIN (Yahoo Finance as a
+// fallback), the European Central Bank's reference rates (through
+// Frankfurter) between currencies. No account or key is needed. Prices are kept in memory and,
 // with a Cache, across restarts: each day is asked once.
 //
 //	p := price.New(nil, http.DefaultClient) // memory only
@@ -19,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,7 +54,8 @@ type Service struct {
 	HTTP  *http.Client
 	Now   func() time.Time
 	// Provider endpoints, replaceable in tests.
-	BinanceURL, OKXURL, FXURL string
+	BinanceURL, OKXURL, FXURL, JustETFURL string
+	YahooURLs                             []string // tried in turn
 	// Market, when set, answers instead of the providers (no network): the
 	// closes of pair ("binance:BTCEUR", "fx:USDEUR"…) from from to to. A
 	// market it does not know has no closes.
@@ -75,6 +78,8 @@ func New(cache Cache, client *http.Client) *Service {
 		BinanceURL: "https://data-api.binance.vision",
 		OKXURL:     "https://www.okx.com",
 		FXURL:      "https://api.frankfurter.dev/v1",
+		JustETFURL: "https://www.justetf.com",
+		YahooURLs:  []string{"https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com"},
 		series:     map[string]map[string]decimal.Decimal{},
 		wins:       map[string][]Window{},
 	}
@@ -113,6 +118,8 @@ func (s *Service) Price(ctx context.Context, a model.Asset, at time.Time, ccy st
 		return s.fx(ctx, sym, ccy, at)
 	case model.PeggedTo(a) != "":
 		return s.fx(ctx, model.PeggedTo(a), ccy, at)
+	case a.Kind == model.Security:
+		return s.security(ctx, a, at, ccy)
 	case a.Kind != model.Crypto:
 		return decimal.Zero, ErrNoPrice
 	}
@@ -144,6 +151,45 @@ func (s *Service) Price(ctx context.Context, a model.Asset, at time.Time, ccy st
 			return p, nil
 		}
 		m, err := t.then()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return p.Mul(m), nil
+	}
+	return decimal.Zero, lastErr
+}
+
+var isinRe = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{9}[0-9]$`)
+
+// justETF quotes in these currencies itself; others go through EUR.
+var justETFCurrencies = map[string]bool{"EUR": true, "USD": true, "GBP": true, "CHF": true}
+
+// security prices a stock, ETF or fund by its ISIN: justETF first (any
+// exchange-traded instrument, in the currency asked), then Yahoo Finance
+// (a euro listing of the ISIN).
+func (s *Service) security(ctx context.Context, a model.Asset, at time.Time, ccy string) (decimal.Decimal, error) {
+	isin := strings.ToUpper(a.ISIN)
+	if isin == "" && isinRe.MatchString(strings.ToUpper(a.Symbol)) {
+		isin = strings.ToUpper(a.Symbol)
+	}
+	if !isinRe.MatchString(isin) {
+		return decimal.Zero, ErrNoPrice
+	}
+	in := ccy
+	if !justETFCurrencies[in] {
+		in = "EUR"
+	}
+	var lastErr error = ErrNoPrice
+	for _, t := range []struct{ pair, ccy string }{{"justetf:" + isin + ":" + in, in}, {"yahoo:" + isin, "EUR"}} {
+		p, err := s.close(ctx, t.pair, at)
+		if err != nil {
+			if !errors.Is(err, ErrNoPrice) {
+				lastErr = err
+			}
+			continue
+		}
+		m, err := s.fx(ctx, t.ccy, ccy, at)
 		if err != nil {
 			lastErr = err
 			continue
@@ -297,6 +343,21 @@ func (s *Service) fetch(ctx context.Context, pair string, at time.Time) error {
 		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) {
 			return s.frankfurter(ctx, market[:3], market[3:], from, to)
 		}
+	case "justetf":
+		from, to = at.Add(-800*day), at.Add(199*day)
+		if to.After(now) {
+			to, from = now, now.Add(-999*day)
+		}
+		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) {
+			isin, ccy, _ := strings.Cut(market, ":")
+			return s.justETF(ctx, isin, ccy, from, to)
+		}
+	case "yahoo":
+		from, to = at.Add(-800*day), at.Add(199*day)
+		if to.After(now) {
+			to, from = now, now.Add(-999*day)
+		}
+		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) { return s.yahoo(ctx, market, from, to) }
 	default:
 		return fmt.Errorf("price: unknown provider %q", provider)
 	}
@@ -325,12 +386,37 @@ func (s *Service) fetch(ctx context.Context, pair string, at time.Time) error {
 	return nil
 }
 
+// browserUA: market data sites answer browsers.
+const browserUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+
+// browser: the provider answers browsers only.
+func (s *Service) browser(u string) bool {
+	if s.JustETFURL != "" && strings.HasPrefix(u, s.JustETFURL) {
+		return true
+	}
+	for _, y := range s.YahooURLs {
+		if strings.HasPrefix(u, y) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) get(ctx context.Context, u string, out any) (int, error) {
+	return s.getN(ctx, u, out, 3)
+}
+
+// getN asks up to tries times while the provider is busy or failing.
+func (s *Service) getN(ctx context.Context, u string, out any, tries int) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("User-Agent", "Fundarr (+https://github.com/Alexis-Marcel/fundarr)")
+	if s.browser(u) {
+		req.Header.Set("User-Agent", browserUA)
+		req.Header.Set("Accept", "application/json")
+	}
 	var resp *http.Response
 	for attempt := 0; ; attempt++ {
 		resp, err = s.HTTP.Do(req)
@@ -341,7 +427,7 @@ func (s *Service) get(ctx context.Context, u string, out any) (int, error) {
 			resp.Body.Close()
 			err = fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
-		if attempt == 2 {
+		if attempt >= tries-1 {
 			return 0, fmt.Errorf("price %s: %w", req.URL.Host, err)
 		}
 		select {
@@ -476,6 +562,135 @@ func (s *Service) frankfurter(ctx context.Context, base, quote string, from, to 
 	for _, d := range days {
 		if v, err := decimal.NewFromString(r.Rates[d][quote].String()); err == nil && v.IsPositive() {
 			out[d] = v
+		}
+	}
+	return out, nil
+}
+
+// justETF: GET /api/etfs/{ISIN}/performance-chart, the daily quotes of an
+// ETF or a stock in EUR, USD, GBP or CHF (what its site draws). A day
+// without trading repeats the last quote.
+func (s *Service) justETF(ctx context.Context, isin, ccy string, from, to time.Time) (map[string]decimal.Decimal, error) {
+	q := url.Values{"locale": {"en"}, "currency": {ccy}, "valuesType": {"MARKET_VALUE"}, "reduceData": {"false"},
+		"includeDividends": {"false"}, "dateFrom": {dayOf(from)}, "dateTo": {dayOf(to)}}
+	var r struct {
+		Series []struct {
+			Date  string `json:"date"`
+			Value struct {
+				Raw json.Number `json:"raw"`
+			} `json:"value"`
+		} `json:"series"`
+	}
+	code, err := s.get(ctx, s.JustETFURL+"/api/etfs/"+url.PathEscape(isin)+"/performance-chart?"+q.Encode(), &r)
+	if code == 400 || code == 404 {
+		return nil, errUnknownMarket
+	}
+	if err != nil {
+		if code >= 400 && code < 500 {
+			return nil, errUnknownMarket
+		}
+		return nil, err
+	}
+	if code != 200 {
+		return nil, fmt.Errorf("price justetf %s: HTTP %d", isin, code)
+	}
+	out := map[string]decimal.Decimal{}
+	for _, p := range r.Series {
+		if v, err := decimal.NewFromString(p.Value.Raw.String()); err == nil && v.IsPositive() && len(p.Date) == 10 {
+			out[p.Date] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil, errUnknownMarket
+	}
+	return out, nil
+}
+
+// Euro listings, best first: where a European ISIN trades in euros.
+var euroSuffixes = []string{".DE", ".PA", ".AS", ".MI", ".F", ".BR", ".MC", ".LS", ".VI", ".HE", ".IR", ".SG", ".MU", ".DU", ".BE", ".HM", ".HA"}
+
+// yahoo: the ISIN found with GET /v1/finance/search, one of its euro
+// listings read with GET /v8/finance/chart; each host in turn.
+func (s *Service) yahoo(ctx context.Context, isin string, from, to time.Time) (map[string]decimal.Decimal, error) {
+	var lastErr error
+	for _, base := range s.YahooURLs {
+		out, err := s.yahooAt(ctx, base, isin, from, to)
+		if err == nil || errors.Is(err, errUnknownMarket) {
+			return out, err
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (s *Service) yahooAt(ctx context.Context, base, isin string, from, to time.Time) (map[string]decimal.Decimal, error) {
+	var found struct {
+		Quotes []struct {
+			Symbol    string `json:"symbol"`
+			QuoteType string `json:"quoteType"`
+		} `json:"quotes"`
+	}
+	q := url.Values{"q": {isin}, "quotesCount": {"20"}, "newsCount": {"0"}}
+	// Yahoo refusing (429) is not a moment's business: no retry, next host.
+	code, err := s.getN(ctx, base+"/v1/finance/search?"+q.Encode(), &found, 1)
+	if err != nil {
+		return nil, err
+	}
+	if code != 200 {
+		return nil, fmt.Errorf("price yahoo search: HTTP %d", code)
+	}
+	symbol := ""
+	for _, suf := range euroSuffixes {
+		for _, f := range found.Quotes {
+			if strings.HasSuffix(strings.ToUpper(f.Symbol), suf) {
+				symbol = f.Symbol
+				break
+			}
+		}
+		if symbol != "" {
+			break
+		}
+	}
+	if symbol == "" {
+		return nil, errUnknownMarket
+	}
+	var chart struct {
+		Chart struct {
+			Result []struct {
+				Meta struct {
+					Currency  string `json:"currency"`
+					GMTOffset int64  `json:"gmtoffset"`
+				} `json:"meta"`
+				Timestamp  []int64 `json:"timestamp"`
+				Indicators struct {
+					Quote []struct {
+						Close []*float64 `json:"close"`
+					} `json:"quote"`
+				} `json:"indicators"`
+			} `json:"result"`
+		} `json:"chart"`
+	}
+	cq := url.Values{"period1": {strconv.FormatInt(from.Unix(), 10)}, "period2": {strconv.FormatInt(to.Add(day).Unix(), 10)}, "interval": {"1d"}}
+	code, err = s.getN(ctx, base+"/v8/finance/chart/"+url.PathEscape(symbol)+"?"+cq.Encode(), &chart, 1)
+	if code == 404 {
+		return nil, errUnknownMarket
+	}
+	if err != nil {
+		return nil, err
+	}
+	if code != 200 || len(chart.Chart.Result) == 0 {
+		return nil, fmt.Errorf("price yahoo %s: HTTP %d", symbol, code)
+	}
+	r := chart.Chart.Result[0]
+	if r.Meta.Currency != "EUR" || len(r.Indicators.Quote) == 0 {
+		return nil, errUnknownMarket
+	}
+	out := map[string]decimal.Decimal{}
+	closes := r.Indicators.Quote[0].Close
+	for i, ts := range r.Timestamp {
+		if i < len(closes) && closes[i] != nil && *closes[i] > 0 {
+			// The exchange's own day, not UTC's.
+			out[dayOf(time.Unix(ts+r.Meta.GMTOffset, 0))] = decimal.NewFromFloat(*closes[i]).Round(6)
 		}
 	}
 	return out, nil

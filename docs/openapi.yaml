@@ -156,10 +156,10 @@ paths:
   /api/v1/portfolio:
     get:
       operationId: getPortfolio
-      summary: The crypto held now, across sources
+      summary: The crypto and securities held now, across sources
       description: |
-        In the currency of Settings → Valuation. Only crypto counts (stablecoins
-        included). `value` − `invested` = `unrealized` + `realized` + `rewards`.
+        In the currency of Settings → Valuation. Crypto (stablecoins included)
+        and securities count; fiat does not. `value` − `invested` = `unrealized` + `realized` + `rewards`.
       responses:
         "200":
           description: The portfolio.
@@ -202,7 +202,7 @@ paths:
                       required: [date, value, invested]
                       properties:
                         date: { type: string, format: date }
-                        value: { $ref: "#/components/schemas/Money", description: "What the crypto held was worth at that day's close." }
+                        value: { $ref: "#/components/schemas/Money", description: "What was held was worth at that day's close." }
                         invested: { $ref: "#/components/schemas/Money", description: "Money put in so far." }
                   unpriced:
                     type: array
@@ -401,7 +401,7 @@ components:
           required: [value, invested, cost, unrealized, realized, rewards]
           properties:
             value: { $ref: "#/components/schemas/Money" }
-            invested: { $ref: "#/components/schemas/Money", description: "Money that came in from outside the crypto portfolio." }
+            invested: { $ref: "#/components/schemas/Money", description: "Money that came in from outside the portfolio." }
             cost: { $ref: "#/components/schemas/Money", description: "Average cost of what is held." }
             unrealized: { $ref: "#/components/schemas/Money" }
             realized: { $ref: "#/components/schemas/Money" }

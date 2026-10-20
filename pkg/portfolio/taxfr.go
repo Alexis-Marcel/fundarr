@@ -68,7 +68,7 @@ func cents(d decimal.Decimal) decimal.Decimal { return d.Round(2) }
 // value at reception is part of the acquisition price; otherwise they
 // count for 0.
 func TaxFR(acts []model.Activity, in map[string]string, price Price, year int, income bool) Tax {
-	w := newWalker(Cached(price), in)
+	w := newWalker(Cached(price), in, crypto)
 	t := Tax{Year: year, Disposals: []Disposal{}, Rate: Rate(year)}
 	acq := decimal.Zero
 	end := time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC)
