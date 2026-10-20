@@ -5,8 +5,8 @@
 Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys never leave your server.
 
 ```
- Sources                      Fundarr                         Destinations
- ───────                      ───────                         ────────────
+ Sources                      Fundarr                         Apps
+ ───────                      ───────                         ────
  Binance  ─┐          normalize · dedupe · reconcile    ┌──▶  Wealthfolio
  OKX      ─┼──read-only──▶   activities + balances   ───┼──▶  Ghostfolio, CSV, API
  …        ─┘                 SQLite, encrypted keys     └──▶
@@ -20,7 +20,7 @@ Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys 
 - **Statements.** When an API leaves holes, import the platform's own export (Binance today): it becomes the history for its period, replacing the corrections with the real trades, keeping the API's richer details where both agree. Fundarr keeps everything it fetches, so an export is needed once, for the past.
 - **Transfers.** A withdrawal on one source and the deposit it became on another (Binance to your Ledger) are paired, by transaction hash or by amount and time. Destinations move the coins between accounts at their purchase cost, instead of seeing a sale and a new purchase.
 - **Prices.** Daily prices from Binance and OKX public market data, exchange rates from the European Central Bank (via Frankfurter): no account or key. They value corrections, rewards and airdrops, which then reach destinations with a cost.
-- **Destinations** receive new activities after every sync. Each delivery is recorded, so nothing is sent twice and failures are retried.
+- **Apps**: trackers such as Wealthfolio receive new activities after every sync; each delivery is recorded, so nothing is sent twice and failures are retried. Other apps read Fundarr with a token.
 - **One small container**: a Go binary with the web UI built in, plus a SQLite file. It runs on a Raspberry Pi.
 
 ## Connectors
@@ -43,7 +43,9 @@ Next on the list: Trade Republic (via [pytr](https://github.com/pytr-org/pytr)).
 
 ## Read API
 
-Other apps and scripts can read every activity, with costs and transfers worked out, through a token-protected read API, or download it as CSV (Fundarr or Koinly format). See [docs/api.md](docs/api.md).
+Other apps and scripts can read every activity, the portfolio, its history and the French 2086 form through a token-protected read API ([docs/api.md](docs/api.md), [OpenAPI](docs/openapi.yaml)), or download the history as CSV (Fundarr or Koinly format).
+
+To build your own app on it, start Fundarr with made-up data (`FUNDARR_DEMO=1`): see [Build an app](docs/build-an-app.md). [Cairn](https://github.com/Alexis-Marcel/cairn) is a complete example.
 
 ## Run it
 
@@ -83,6 +85,7 @@ On first start, Fundarr creates `/data/secret.key`, which encrypts the API keys 
 | `FUNDARR_PASSWORD_HASH`, `FUNDARR_USERNAME` | Fix the credentials from the environment instead of the UI (`docker run --rm -it ghcr.io/alexis-marcel/fundarr hash-password`; in Compose, double every `$`). |
 | `FUNDARR_SECRET_KEY` | Master key in base64 (`openssl rand -base64 32`), instead of the key file. |
 | `FUNDARR_DATA`, `FUNDARR_ADDR` | Data directory (`/data`) and listen address (`:9494`). |
+| `FUNDARR_DEMO` | `1` serves a made-up portfolio from memory, without sign-in or syncs, to build apps on. The data directory is not touched. |
 
 ## Security
 

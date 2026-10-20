@@ -1,0 +1,42 @@
+# Build an app on Fundarr
+
+Fundarr already did the hard part: every exchange and wallet read, the history checked against the balances, transfers paired, costs and prices worked out. Your app reads the result from the [read API](api.md) and only has to show it.
+
+## 1. Run the demo
+
+```sh
+docker run --rm -e FUNDARR_DEMO=1 -p 9494:9494 ghcr.io/alexis-marcel/fundarr
+```
+
+`FUNDARR_DEMO=1` serves a made-up crypto portfolio: Binance, Kraken and a Ledger from 2023 to today, with monthly buys, staking rewards, moves to the Ledger, a swap to USDC and a few sales. The engine computes everything from it as it would from real accounts, with fixed made-up prices (no network). It lives in memory: nothing is read from or written to `/data`, nothing syncs, and any token is accepted, `fdr_demo` for instance.
+
+Open http://localhost:9494 to see the same data in Fundarr.
+
+## 2. Make a request
+
+```sh
+curl -H "Authorization: Bearer fdr_demo" http://localhost:9494/api/v1/portfolio
+```
+
+The main routes:
+
+| Route | |
+|---|---|
+| `GET /api/v1/portfolio` | Value, money invested, gains, each asset and where it is held |
+| `GET /api/v1/portfolio/history?step=month` | Value and invested over time, for a chart |
+| `GET /api/v1/tax/fr?year=2025` | The French 2086 form, line by line |
+| `GET /api/v1/activities` | Every activity, paged |
+
+The whole API is described in [`openapi.yaml`](openapi.yaml) (also served at `/api/v1/openapi.yaml`), to generate a client; [api.md](api.md) explains what the figures mean.
+
+## 3. Keep the token on a server
+
+A token reads your whole history. Never put it in a web page or a mobile app: anyone could read it there. Have your app's server call Fundarr with the token and pass the answers on to the browser, as Cairn does in a few lines of Go (`GET /api/*` → Fundarr's `/api/v1/*`).
+
+## 4. Connect it to a real Fundarr
+
+In Fundarr, **Apps → Add app → Other app**: name it, then copy the API URL and the token, shown once. Remove the app there to revoke its token.
+
+## A full example
+
+[Cairn](https://github.com/Alexis-Marcel/cairn) is a small app built this way: a portfolio dashboard and the 2086 form, a Go server holding the token and a React UI.
