@@ -117,7 +117,7 @@ function ReadAppMade({ made, cairn, url, onDone }: { made: { name: string; token
   const base = `${(url || window.location.origin).replace(/\/+$/, "")}/api/v1`;
   return (
     <div className="entity-form">
-      {cairn && <p className="setup">Paste these into Cairn&apos;s setup page.</p>}
+      {cairn && <p className="setup">In Cairn: Réglages → Synchroniser avec Fundarr.</p>}
       <CopyField label="API URL" value={base} />
       <CopyField label="Token" value={made.token} />
       <CopyField label="Try it" value={`curl -H "Authorization: Bearer ${made.token}" ${base}/portfolio`} code />
