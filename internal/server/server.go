@@ -33,6 +33,8 @@ type Config struct {
 	Log     *slog.Logger
 	// Background is the context syncs started from the UI run in.
 	Background context.Context
+	// Demo: the data is made up (FUNDARR_DEMO); nothing reaches a platform.
+	Demo bool
 }
 
 type Server struct {
@@ -80,27 +82,29 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /auth/callback", s.auth.handleOIDCCallback)
 
 	api := func(pattern string, h http.HandlerFunc) { m.HandleFunc(pattern, s.protect(h, 1<<20)) }
-	m.HandleFunc("POST /api/sources/{id}/import", s.protect(s.importStatement, 64<<20))
+	// live: what reaches a platform or a destination, refused in demo mode.
+	live := func(pattern string, h http.HandlerFunc) { api(pattern, s.notDemo(h)) }
+	m.HandleFunc("POST /api/sources/{id}/import", s.protect(s.notDemo(s.importStatement), 64<<20))
 	api("POST /api/password", s.auth.handleChangePassword)
 	api("GET /api/definitions", s.definitions)
 	api("POST /api/kinds/{kind}/detect", s.detect)
-	api("POST /api/kinds/{kind}/preview", s.preview)
+	live("POST /api/kinds/{kind}/preview", s.preview)
 	api("GET /api/sources", s.listSources)
-	api("POST /api/sources", s.createSource)
-	api("POST /api/sources/test", s.testSource)
+	live("POST /api/sources", s.createSource)
+	live("POST /api/sources/test", s.testSource)
 	api("PUT /api/sources/{id}", s.updateSource)
 	api("DELETE /api/sources/{id}", s.deleteSource)
-	api("POST /api/sources/{id}/sync", s.syncSource)
+	live("POST /api/sources/{id}/sync", s.syncSource)
 	api("GET /api/sources/{id}/activities", s.sourceActivities)
 	api("GET /api/sources/{id}/holdings", s.sourceHoldings)
 	api("GET /api/sources/{id}/statements", s.statements)
 	api("GET /api/destinations", s.listDestinations)
-	api("POST /api/destinations", s.createDestination)
+	live("POST /api/destinations", s.createDestination)
 	api("PUT /api/destinations/{id}", s.updateDestination)
 	api("DELETE /api/destinations/{id}", s.deleteDestination)
-	api("GET /api/destinations/{id}/accounts", s.destinationAccounts)
-	api("POST /api/destinations/{id}/push", s.pushDestination)
-	api("PUT /api/routes", s.putRoute)
+	live("GET /api/destinations/{id}/accounts", s.destinationAccounts)
+	live("POST /api/destinations/{id}/push", s.pushDestination)
+	live("PUT /api/routes", s.putRoute)
 	api("DELETE /api/routes", s.deleteRoute)
 	api("POST /api/routes/reset", s.resetRoute)
 	api("GET /api/runs", s.runs)
@@ -124,6 +128,16 @@ func (s *Server) routes() {
 	read("GET /api/v1/tax/fr", s.v1TaxFR)
 	api("PUT /api/settings", s.putSettings)
 	m.HandleFunc("/", s.static)
+}
+
+// notDemo refuses what would reach a platform when the data is made up.
+func (s *Server) notDemo(h http.HandlerFunc) http.HandlerFunc {
+	if !s.cfg.Demo {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeErr(w, http.StatusForbidden, "not in the demo: its data is made up")
+	}
 }
 
 // protect requires a session and, for writes, a JSON body (a cross-site form
@@ -177,6 +191,8 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		"fixed":   s.auth.cfg.PasswordHash != "",
 		"auto":    s.auth.cfg.Mode == "oidc" && s.auth.cfg.OIDCAutoRedirect,
 		"version": s.cfg.Version,
+		"demo":    s.cfg.Demo,
+		"url":     s.auth.cfg.PublicURL,
 	})
 }
 
