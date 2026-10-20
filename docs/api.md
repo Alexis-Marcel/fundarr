@@ -12,6 +12,10 @@ A token only reads `/api/v1`; it cannot change anything. Remove the app to revok
 
 The routes are also described in [`openapi.yaml`](openapi.yaml), served at `GET /api/v1/openapi.yaml` (no token needed). To try them without accounts, run Fundarr with `FUNDARR_DEMO=1`: see [Build an app](build-an-app.md).
 
+## Stability
+
+`/api/v1` only grows: new routes and new fields may appear, and clients should ignore fields they don't know. Nothing is renamed or removed within v1; a breaking change would come as `/api/v2`, with v1 kept alongside for a while. The Go packages under `pkg/` follow [semver](https://semver.org) with the releases: before 1.0, a minor version (0.2) may break them, and its release notes say how.
+
 ## `GET /api/v1/sources`
 
 ```json
