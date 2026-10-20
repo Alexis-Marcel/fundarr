@@ -33,8 +33,25 @@ export function qty(v: string): string {
   return (neg ? "−" : "") + grouped + (f ? "." + f : "");
 }
 
+/** How an asset is named: a security by its name (its ISIN is no name). */
 export function assetLabel(a: Asset) {
+  if (a.kind === "security" && a.name) return a.name;
   return a.symbol || a.isin || "?";
+}
+
+/** The sub-account of a source, for people: "" is the main one. */
+export function accountName(a: string) {
+  return a === "" ? "Main account" : a;
+}
+
+/** "14:32" today, "Tue 14:32" this week, a date otherwise. */
+export function until(iso: string) {
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return time;
+  if (d.getTime() - now.getTime() < 6 * 86400000) return `${d.toLocaleDateString("en", { weekday: "short" })} ${time}`;
+  return `${d.toLocaleDateString("en", { month: "short", day: "numeric" })} ${time}`;
 }
 
 /** Repeats fn every `ms` while mounted (and once immediately). */

@@ -52,7 +52,7 @@ func TestSeed(t *testing.T) {
 	eng.Prices.Now = func() time.Time { return now }
 
 	srcs, _ := st.Sources(ctx)
-	if len(srcs) != 3 {
+	if len(srcs) != 4 {
 		t.Fatalf("%d sources", len(srcs))
 	}
 	for _, s := range srcs {
@@ -87,7 +87,7 @@ func TestSeed(t *testing.T) {
 	for _, h := range p.Assets {
 		held[h.Asset.Symbol] = true
 	}
-	for _, sym := range []string{"BTC", "ETH", "SOL", "USDC"} {
+	for _, sym := range []string{"BTC", "ETH", "SOL", "USDC", "IE00B4L5Y983", "LU1681043599", "FR0000120271"} {
 		if !held[sym] {
 			t.Fatalf("%s not held: %+v", sym, p.Assets)
 		}

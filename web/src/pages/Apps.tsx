@@ -3,7 +3,7 @@ import { api, type APIToken, type DestAccount, type DestDef, type Destination, t
 import { KindBadge, StatusDot } from "../components/Badge";
 import { EntityForm } from "../components/EntityForm";
 import { Modal } from "../components/Modal";
-import { ago, day, isZeroTime, usePoll } from "../lib";
+import { accountName, ago, day, isZeroTime, usePoll } from "../lib";
 
 /** A read app: Fundarr does not push to it, it reads /api/v1 with a token. */
 type ReadKind = "cairn" | "other";
@@ -390,18 +390,21 @@ function DestinationCard({ d, def, routes, sources, onChanged }: { d: Destinatio
 
 function MappingRow({ d, s, route, accounts, onChanged }: { d: Destination; s: Source; route?: Route; accounts: DestAccount[] | null; onChanged: () => void }) {
   const since = route && !route.since.startsWith("0001-") ? route.since.slice(0, 10) : "";
-  const save = async (account: string, sinceDate: string) => {
+  const save = async (account: string, sinceDate: string, subs = route?.accounts) => {
     if (!account) {
       if (route) await api.deleteRoute({ destinationId: d.id, sourceId: s.id });
     } else {
-      await api.putRoute({ destinationId: d.id, sourceId: s.id, account, since: sinceDate ? `${sinceDate}T00:00:00Z` : "0001-01-01T00:00:00Z" });
+      await api.putRoute({ destinationId: d.id, sourceId: s.id, account, since: sinceDate ? `${sinceDate}T00:00:00Z` : "0001-01-01T00:00:00Z", accounts: subs });
     }
     onChanged();
   };
+  const subs = s.subAccounts ?? [];
   return (
-    <tr>
+    <>
+    <tr className={subs.length ? "has-subs" : ""}>
       <td>
         <strong>{s.name}</strong>
+        {subs.length > 0 && <small className="muted note">{accountName("")}</small>}
       </td>
       <td>
         <select value={route?.account ?? ""} onChange={(e) => save(e.target.value, since)} disabled={!accounts} aria-label={`Account for ${s.name}`}>
@@ -434,5 +437,33 @@ function MappingRow({ d, s, route, accounts, onChanged }: { d: Destination; s: S
         )}
       </td>
     </tr>
+    {subs.map((sub) => (
+      <tr key={sub} className="sub-row">
+        <td>
+          <span className="sub-name">{sub}</span>
+        </td>
+        <td>
+          <select
+            value={route?.accounts?.[sub] ?? ""}
+            disabled={!route || !accounts}
+            onChange={(e) => route && save(route.account, since, { ...(route.accounts ?? {}), [sub]: e.target.value })}
+            aria-label={`Account for ${s.name} ${sub}`}
+          >
+            <option value="">Same account</option>
+            {accounts
+              ?.filter((a) => a.id !== route?.account)
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                  {a.currency ? ` (${a.currency})` : ""}
+                </option>
+              ))}
+          </select>
+        </td>
+        <td />
+        <td />
+      </tr>
+    ))}
+    </>
   );
 }
