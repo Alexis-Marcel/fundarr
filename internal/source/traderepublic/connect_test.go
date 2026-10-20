@@ -228,6 +228,28 @@ func TestConnectQR(t *testing.T) {
 	}
 }
 
+// Seen on a real account: approved in the app, the challenge says CLAIMED
+// and gives no process; the session is already there.
+func TestConnectQRClaimed(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake(t)
+	f.Claimed = true
+	s := connect(t, f, map[string]string{"phone": "", "pin": ""}, nil, nil)
+	if _, err := s.Login(ctx, "qr"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.Poll(ctx) // still waiting for the scan
+	if err != nil || c == nil || c.Kind != "qr" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if c, err = s.Poll(ctx); err != nil || c != nil {
+		t.Fatalf("CLAIMED: %+v %v, want signed in", c, err)
+	}
+	if !s.Session().Valid(time.Now()) {
+		t.Fatal("not signed in")
+	}
+}
+
 func TestConnectRefusals(t *testing.T) {
 	ctx := context.Background()
 	f := NewFake(t)
