@@ -1,6 +1,6 @@
 # Contributing
 
-Most contributions are a new **source** (a platform Fundarr reads from) or a new **destination** (a tool it delivers to). Each one is a Go package that registers itself; the engine, storage and UI need no change.
+Most contributions are a new **source** (a platform Fundarr reads from) or a new **destination** (an app Fundarr sends to, listed under Apps). Each one is a Go package that registers itself; the engine, storage and UI need no change.
 
 ## A new source
 

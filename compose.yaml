@@ -1,0 +1,10 @@
+# Fundarr: docker compose up -d, then open http://localhost:9494
+services:
+  fundarr:
+    image: ghcr.io/alexis-marcel/fundarr:latest
+    restart: unless-stopped
+    ports: ["9494:9494"]
+    volumes: ["fundarr:/data"]   # the database and its key: back them up together
+
+volumes:
+  fundarr:
