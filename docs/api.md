@@ -63,7 +63,7 @@ What each source reported holding at its last sync.
 
 ## Portfolio (crypto)
 
-Values are in the currency of Settings → Valuation (`currency` in every answer). Only crypto counts (stablecoins included); fiat and securities are left out. An asset with no known price is listed in `unpriced` and counted at 0.
+Values are in the currency of Settings → Valuation (`currency` in every answer). Only crypto counts (stablecoins included); fiat and securities are left out. An asset with no known price is listed in `unpriced` and counted at 0 (left out of `assets`).
 
 **Invested** is the money that came in from outside the crypto portfolio: fiat spent buying crypto, minus fiat received selling it, plus crypto deposited from outside (and balance corrections that add coins) at its value that day, minus crypto sent outside (and corrections that remove coins) at its value that day. Moves between your own sources are not invested. Rewards are gains, not invested.
 
@@ -99,32 +99,34 @@ Values are in the currency of Settings → Valuation (`currency` in every answer
 ```
 
 - `cost`: average cost of what is held (Fundarr's cost basis); `unrealized` = `value` − `cost`.
-- `realized`: gains on what was sold or spent, with the same average cost, all time.
+- `realized`: gains on what was sold for money or stablecoins, spent or sent outside, with the same average cost, all time, fees deducted. A swap for another coin carries its cost over to it (no gain until that coin is sold).
 - `rewards`: value of rewards received, at their day's price, all time.
 - `share`: part of `total.value`, 0 to 1. Assets are sorted by value, largest first.
+- `value` − `invested` = `unrealized` + `realized` + `rewards` (up to stablecoins' exchange rate moves).
 
 ### `GET /api/v1/portfolio/history?from=&to=&step=day|week|month`
 
-One point per step (end of day UTC), `from` and `to` as `YYYY-MM-DD` (default: from the first activity to today), `step` default `day`.
+One point per step (end of day UTC), `from` and `to` as `YYYY-MM-DD` (default: from the first activity to today), `step` default `day`. A `week` ends on Sunday, a `month` on its last day; the last point is `to`. At most 3700 points (otherwise 422: use a longer step).
 
 ```json
 {
   "currency": "EUR",
-  "points": [{ "date": "2024-03-01", "value": "1520.00", "invested": "1500.00" }]
+  "points": [{ "date": "2024-03-01", "value": "1520.00", "invested": "1500.00" }],
+  "unpriced": []
 }
 ```
 
 `value`: what the crypto held that day was worth at that day's close. `invested`: cumulative, as defined above.
 
-### `GET /api/v1/tax/fr?year=2025`
+### `GET /api/v1/tax/fr?year=2025&rewards=income`
 
-French tax on crypto disposals (article 150 VH bis du CGI, formulaire 2086), for one calendar year. Only disposals for fiat money (or goods and services) are taxable events; crypto-to-crypto exchanges, stablecoins included, are not. Each disposal's gain is:
+French tax on crypto disposals (article 150 VH bis du CGI, formulaire 2086), for one calendar year (default: last year), always in EUR. Only disposals for fiat money (or goods and services) are taxable events; crypto-to-crypto exchanges, stablecoins included, are not. Each disposal's gain is:
 
 ```
-gain = price − acquisition × price / portfolio
+gain = price − fees − acquisition × price / portfolio
 ```
 
-- `price`: what was received, in EUR, minus the fees of that disposal;
+- `price`: what was received, in EUR; `fees`: the fees of that disposal (they reduce the gain, not the ratio);
 - `portfolio`: value of all the crypto held across every source just before the disposal (day's prices);
 - `acquisition`: total price paid for all crypto ever acquired with fiat money (fees included), minus the share of it already used by earlier disposals (the "fraction de capital initial" of each previous line). Crypto received for free (rewards, airdrops) or deposited from outside adds its value at reception only if `rewards=income` is passed (they were taxed as income); otherwise 0.
 
@@ -142,15 +144,18 @@ gain = price − acquisition × price / portfolio
       "fees": "1.20",
       "portfolio": "12000.00",
       "acquisition": "9000.00",
-      "capitalShare": "636.65",
-      "gain": "212.15"
+      "capitalShare": "637.50",
+      "gain": "211.30"
     }
   ],
-  "total": { "disposals": "850.00", "gain": "212.15", "exempt": false, "tax": "63.65", "rate": "0.30" },
+  "total": { "disposals": "850.00", "gain": "211.30", "exempt": false, "tax": "66.35", "rate": "0.314" },
   "notes": ["Disposals totalling 305 € or less in the year are exempt."]
 }
 ```
 
-- Lines follow the 2086 form: `price` (cases 213/214/217), `portfolio` (212), `acquisition` (220…223), `capitalShare` = acquisition × price / portfolio.
+- Lines follow the 2086 form: `portfolio` (212), `price` (213, 217), `fees` (214), `acquisition` (223), `capitalShare` = acquisition × price / portfolio (the next lines' 221), `gain` (224). Amounts are rounded to the cent; the form takes whole euros.
+- Earlier disposals, of any year and even exempt ones, have already reduced `acquisition`.
 - `exempt`: the year's disposals total 305 € or less.
-- `tax`: `gain` (if positive) × `rate` (flat tax), as an estimate.
+- `gain`: the year's net gain or loss (lines 224 added up).
+- `tax`: `gain` (if positive, not exempt) × `rate` (flat tax: 12.8 % income tax and social charges), as an estimate: 0.30 for 2019–2024, 0.314 from 2025 income (CSG raised to 10.6 % by the LFSS 2026).
+- `notes`: what the figures assume (daily closing prices instead of the exact time, unpriced assets counted at 0…).

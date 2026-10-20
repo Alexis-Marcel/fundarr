@@ -24,7 +24,53 @@ type Valuer func(a Amount, at time.Time) (value decimal.Decimal, ok bool)
 // Activities whose cost is unknown (no price) are left out. pairs maps a
 // deposit's id to the withdrawal it came from.
 func Costs(acts []Activity, pairs map[string]string, value Valuer) map[string]decimal.Decimal {
-	type pool struct{ qty, cost decimal.Decimal }
+	return Books(acts, pairs, value).Costs
+}
+
+// Book is the replay behind Costs, with what left the pools along the way
+// and what they hold at the end.
+type Book struct {
+	Costs map[string]decimal.Decimal
+	// Taken: by activity id, the cost of what a trade gave or an outflow
+	// sent (cash at its market value); Fees: of a fee paid apart.
+	Taken, Fees map[string]decimal.Decimal
+	pools       map[string]*pool
+}
+
+type pool struct{ qty, cost decimal.Decimal }
+
+// Held is the quantity and cost left in one source's pool of an asset
+// (zero when history shows more leaving than arriving).
+func (b *Book) Held(src string, a Asset) (qty, cost decimal.Decimal) {
+	p := b.pools[src+"\x00"+a.Key()]
+	if p == nil || !p.qty.IsPositive() {
+		return decimal.Zero, decimal.Zero
+	}
+	return p.qty, p.cost
+}
+
+// ReplayOrder sorts activities in time order, a deposit after the
+// withdrawal it came from even when the receiving platform's clock says
+// otherwise. pairs maps a deposit's id to its withdrawal.
+func ReplayOrder(acts []Activity, pairs map[string]string) []Activity {
+	byID := map[string]Activity{}
+	for _, a := range acts {
+		byID[a.ID] = a
+	}
+	at := func(a Activity) time.Time {
+		if o, ok := byID[pairs[a.ID]]; ok && !a.Time.After(o.Time) {
+			return o.Time.Add(time.Nanosecond)
+		}
+		return a.Time
+	}
+	order := make([]Activity, len(acts))
+	copy(order, acts)
+	sort.SliceStable(order, func(i, j int) bool { return at(order[i]).Before(at(order[j])) })
+	return order
+}
+
+// Books replays like Costs and keeps the book.
+func Books(acts []Activity, pairs map[string]string, value Valuer) *Book {
 	pools := map[string]*pool{}
 	poolOf := func(src string, a Asset) *pool {
 		k := src + "\x00" + a.Key()
@@ -79,26 +125,11 @@ func Costs(acts []Activity, pairs map[string]string, value Valuer) map[string]de
 		p.cost = p.cost.Add(cost)
 	}
 
-	// A deposit is replayed after the withdrawal it came from, even when the
-	// receiving platform's clock says otherwise.
-	byID := map[string]Activity{}
-	for _, a := range acts {
-		byID[a.ID] = a
-	}
-	at := func(a Activity) time.Time {
-		if o, ok := byID[pairs[a.ID]]; ok && !a.Time.After(o.Time) {
-			return o.Time.Add(time.Nanosecond)
-		}
-		return a.Time
-	}
-	order := make([]Activity, len(acts))
-	copy(order, acts)
-	sort.SliceStable(order, func(i, j int) bool { return at(order[i]).Before(at(order[j])) })
-
 	out := map[string]decimal.Decimal{}
+	taken, fees := map[string]decimal.Decimal{}, map[string]decimal.Decimal{}
 	carried := map[string]decimal.Decimal{} // withdrawal id → cost that left with it
 	known := map[string]bool{}
-	for _, a := range order {
+	for _, a := range ReplayOrder(acts, pairs) {
 		var fee *Amount
 		if a.Fee != nil && a.Fee.Qty.IsPositive() {
 			fee = a.Fee
@@ -110,6 +141,7 @@ func Costs(acts []Activity, pairs map[string]string, value Valuer) map[string]de
 				in, given = *a.Quote, a.Base
 			}
 			cost, ok := take(a.SourceID, given, a.Time)
+			taken[a.ID] = cost
 			if !ok {
 				cost, ok = market(in, a.Time)
 			}
@@ -138,11 +170,11 @@ func Costs(acts []Activity, pairs map[string]string, value Valuer) map[string]de
 			}
 		case a.Outflow():
 			cost, ok := take(a.SourceID, a.Base, a.Time)
-			carried[a.ID], known[a.ID] = cost, ok
+			carried[a.ID], known[a.ID], taken[a.ID] = cost, ok, cost
 		}
 		if fee != nil {
-			take(a.SourceID, *fee, a.Time)
+			fees[a.ID], _ = take(a.SourceID, *fee, a.Time)
 		}
 	}
-	return out
+	return &Book{Costs: out, Taken: taken, Fees: fees, pools: pools}
 }

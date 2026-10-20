@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -19,9 +20,11 @@ import (
 	"github.com/Alexis-Marcel/fundarr/internal/dest"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
 	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/shopspring/decimal"
 )
 
 type testSrc struct{ key string }
@@ -542,5 +545,173 @@ func TestReadAPIWithToken(t *testing.T) {
 	}
 	if r, _ := get("/api/v1/sources", made.Token); r.StatusCode != 401 {
 		t.Fatalf("revoked %d", r.StatusCode)
+	}
+}
+
+// fakePrices: 1 BTC = 50000 EUR every day; nothing else is listed.
+func fakePrices(t *testing.T, st *store.Store) *price.Service {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch r.URL.Path {
+		case "/api/v3/klines":
+			if q.Get("symbol") != "BTCEUR" {
+				w.WriteHeader(400)
+				w.Write([]byte(`{"code":-1121,"msg":"Invalid symbol."}`))
+				return
+			}
+			start, _ := strconv.ParseInt(q.Get("startTime"), 10, 64)
+			end, _ := strconv.ParseInt(q.Get("endTime"), 10, 64)
+			var rows [][]any
+			for ts := start; ts <= end && len(rows) < 1000; ts += 86400000 {
+				rows = append(rows, []any{ts, "0", "0", "0", "50000", "0"})
+			}
+			json.NewEncoder(w).Encode(rows)
+		case "/api/v5/market/history-candles":
+			w.Write([]byte(`{"code":"51001","msg":"Instrument ID doesn't exist.","data":[]}`))
+		default:
+			w.WriteHeader(404)
+			w.Write([]byte(`{"message":"not found"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	p := price.New(st, srv.Client())
+	p.BinanceURL, p.OKXURL, p.FXURL = srv.URL, srv.URL, srv.URL+"/fx"
+	return p
+}
+
+func TestPortfolioAPI(t *testing.T) {
+	ts, eng, c := setup(t, "password")
+	eng.Prices = fakePrices(t, eng.Store)
+	if code := do(t, c, "POST", ts.URL+"/api/login", map[string]string{"username": "admin", "password": "correct horse"}, nil); code != 200 {
+		t.Fatalf("login %d", code)
+	}
+	var src map[string]any
+	do(t, c, "POST", ts.URL+"/api/sources", map[string]any{"kind": "test", "name": "T", "values": map[string]string{"key": "good"}}, &src)
+	id := src["id"].(string)
+	waitIdle(t, eng, id)
+	// Besides the source's deposit of 1 BTC (2024-01-01): 0.1 BTC sold for
+	// 6000 € in 2025, 1 € fee.
+	sale := model.Activity{SourceID: id, NativeID: "sale", Time: time.Date(2025, 3, 1, 10, 0, 0, 0, time.UTC), Type: model.Trade, Side: model.Sell,
+		Base: model.Amt(model.CryptoOrFiat("BTC"), "0.1"), Quote: &[]model.Amount{model.Amt(model.CryptoOrFiat("EUR"), "6000")}[0],
+		Fee: &[]model.Amount{model.Amt(model.CryptoOrFiat("EUR"), "1")}[0]}
+	sale.ID = model.ActivityID(id, sale.NativeID)
+	if _, err := eng.Store.AddActivities(context.Background(), []model.Activity{sale}); err != nil {
+		t.Fatal(err)
+	}
+	var made struct {
+		Token string `json:"token"`
+	}
+	do(t, c, "POST", ts.URL+"/api/tokens", map[string]string{"name": "tracker"}, &made)
+	get := func(path string, out any) int {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+made.Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if out != nil {
+			json.NewDecoder(resp.Body).Decode(out)
+		}
+		return resp.StatusCode
+	}
+
+	var p struct {
+		Currency string `json:"currency"`
+		Total    struct {
+			Value, Invested, Cost, Unrealized, Realized, Rewards string
+		} `json:"total"`
+		Assets []struct {
+			Asset   model.Asset `json:"asset"`
+			Qty     string      `json:"qty"`
+			Price   string      `json:"price"`
+			Value   string      `json:"value"`
+			Share   string      `json:"share"`
+			Sources []struct {
+				ID, Name, Qty string
+			} `json:"sources"`
+		} `json:"assets"`
+		Sources []struct {
+			ID, Name, Kind, Value string
+		} `json:"sources"`
+		Unpriced []model.Asset `json:"unpriced"`
+	}
+	if code := get("/api/v1/portfolio", &p); code != 200 || p.Currency != "EUR" || len(p.Assets) != 1 || p.Unpriced == nil {
+		t.Fatalf("portfolio %d %+v", code, p)
+	}
+	btc := p.Assets[0]
+	// The balance check may add the BTC the source reports beyond its history.
+	qty := decimal.RequireFromString(btc.Qty)
+	if btc.Asset.Symbol != "BTC" || btc.Price != "50000.00" || btc.Value != qty.Mul(decimal.NewFromInt(50000)).StringFixed(2) ||
+		btc.Share != "1.000" || len(btc.Sources) != 1 || btc.Sources[0].Name != "T" || p.Total.Value != btc.Value {
+		t.Fatalf("BTC %+v", p)
+	}
+	if len(p.Sources) != 1 || p.Sources[0].Kind != "test" || p.Sources[0].Value != btc.Value {
+		t.Fatalf("sources %+v", p.Sources)
+	}
+	// Bought at 50000, sold at 60000: 1000 € gained, less the fee.
+	if p.Total.Realized != "999.00" || p.Total.Rewards != "0.00" {
+		t.Fatalf("totals %+v", p.Total)
+	}
+
+	var h struct {
+		Points []struct{ Date, Value, Invested string } `json:"points"`
+	}
+	if code := get("/api/v1/portfolio/history?from=2024-01-01&to=2024-03-31&step=month", &h); code != 200 || len(h.Points) != 3 {
+		t.Fatalf("history %d %+v", code, h)
+	}
+	if pt := h.Points[1]; pt.Date != "2024-02-29" || pt.Value != "50000.00" || pt.Invested != "50000.00" {
+		t.Fatalf("February %+v", pt)
+	}
+	if code := get("/api/v1/portfolio/history", &h); code != 200 || h.Points[0].Date != "2024-01-01" {
+		t.Fatalf("default history %d %+v", code, h.Points[:1])
+	}
+	if code := get("/api/v1/portfolio/history?step=year", nil); code != 400 {
+		t.Fatalf("bad step %d", code)
+	}
+	if code := get("/api/v1/portfolio/history?from=2000-01-01&step=day", nil); code != 422 {
+		t.Fatalf("too many points %d", code)
+	}
+
+	var tx struct {
+		Year      int    `json:"year"`
+		Currency  string `json:"currency"`
+		Disposals []struct {
+			Source                                                       struct{ ID, Name string } `json:"source"`
+			Asset                                                        model.Asset               `json:"asset"`
+			Qty, Price, Fees, Portfolio, Acquisition, CapitalShare, Gain string
+		} `json:"disposals"`
+		Total struct {
+			Disposals, Gain, Tax, Rate string
+			Exempt                     bool
+		} `json:"total"`
+		Notes []string `json:"notes"`
+	}
+	if code := get("/api/v1/tax/fr?year=2025", &tx); code != 200 || tx.Year != 2025 || tx.Currency != "EUR" || len(tx.Disposals) != 1 {
+		t.Fatalf("tax %d %+v", code, tx)
+	}
+	// The deposited BTC counts for 0: the whole price is a gain.
+	d := tx.Disposals[0]
+	if d.Source.Name != "T" || d.Qty != "0.1" || d.Price != "6000.00" || d.Fees != "1.00" || d.Portfolio != "50000.00" ||
+		d.Acquisition != "0.00" || d.CapitalShare != "0.00" || d.Gain != "5999.00" {
+		t.Fatalf("disposal %+v", d)
+	}
+	if tx.Total.Disposals != "6000.00" || tx.Total.Gain != "5999.00" || tx.Total.Exempt || tx.Total.Rate != "0.314" || tx.Total.Tax != "1883.69" || len(tx.Notes) == 0 {
+		t.Fatalf("total %+v", tx.Total)
+	}
+	// Taxed as income when received, it is worth 50000: 50000 × 6000 / 50000.
+	get("/api/v1/tax/fr?year=2025&rewards=income", &tx)
+	if d := tx.Disposals[0]; d.Acquisition != "50000.00" || d.CapitalShare != "6000.00" || d.Gain != "-1.00" || tx.Total.Tax != "0.00" {
+		t.Fatalf("income %+v", tx)
+	}
+	if code := get("/api/v1/tax/fr?year=1990", nil); code != 400 {
+		t.Fatalf("bad year %d", code)
+	}
+	if code := get("/api/v1/tax/fr?rewards=maybe", nil); code != 400 {
+		t.Fatalf("bad rewards %d", code)
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/portfolio", nil)
+	if r, _ := http.DefaultClient.Do(req); r.StatusCode != 401 {
+		t.Fatalf("no token %d", r.StatusCode)
 	}
 }

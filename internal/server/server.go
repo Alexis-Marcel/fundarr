@@ -119,6 +119,9 @@ func (s *Server) routes() {
 	read("GET /api/v1/activities", s.v1Activities)
 	read("GET /api/v1/activities.csv", s.v1CSV)
 	read("GET /api/v1/holdings", s.v1Holdings)
+	read("GET /api/v1/portfolio", s.v1Portfolio)
+	read("GET /api/v1/portfolio/history", s.v1History)
+	read("GET /api/v1/tax/fr", s.v1TaxFR)
 	api("PUT /api/settings", s.putSettings)
 	m.HandleFunc("/", s.static)
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/csv"
 	"net/http"
 	"sort"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/internal/portfolio"
+	"github.com/shopspring/decimal"
 )
 
 // The /api/v1 routes are Fundarr's stable, read-only API: any program can
@@ -57,12 +60,7 @@ func (s *Server) activitiesV1(r *http.Request) ([]v1Activity, error) {
 	if err != nil {
 		return nil, err
 	}
-	srcs := map[string]v1Source{}
-	if list, err := s.st.Sources(ctx); err == nil {
-		for _, e := range list {
-			srcs[e.ID] = v1Source{e.ID, e.Name, e.Kind}
-		}
-	}
+	srcs := s.sourceMap(ctx)
 	ccy := s.eng.Currency(ctx)
 	costs := s.eng.Costs(ctx, l, ccy)
 	q := r.URL.Query()
@@ -94,6 +92,16 @@ func (s *Server) activitiesV1(r *http.Request) ([]v1Activity, error) {
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+func (s *Server) sourceMap(ctx context.Context) map[string]v1Source {
+	srcs := map[string]v1Source{}
+	if list, err := s.st.Sources(ctx); err == nil {
+		for _, e := range list {
+			srcs[e.ID] = v1Source{e.ID, e.Name, e.Kind}
+		}
+	}
+	return srcs
 }
 
 func cursor(a v1Activity) string { return strconv.FormatInt(a.Time.UnixMilli(), 10) + "_" + a.ID }
@@ -157,6 +165,201 @@ func (s *Server) v1Holdings(w http.ResponseWriter, r *http.Request) {
 		out = append(out, src{v1Source{e.ID, e.Name, e.Kind}, at, bal})
 	}
 	writeJSON(w, out)
+}
+
+// ---- portfolio (crypto across sources) and French tax
+
+// priceWait bounds the time spent asking providers for prices a page has
+// not seen yet; what is still unknown after it counts as unpriced.
+const priceWait = 30 * time.Second
+
+func money(d decimal.Decimal) string { return d.StringFixed(2) }
+
+// unitPrice keeps a few significant digits for coins worth little.
+func unitPrice(d decimal.Decimal) string {
+	if d.Abs().GreaterThanOrEqual(decimal.NewFromInt(1)) || d.IsZero() {
+		return d.StringFixed(2)
+	}
+	return d.Round(10).String()
+}
+
+func assets(list []model.Asset) []model.Asset {
+	if list == nil {
+		return []model.Asset{}
+	}
+	return list
+}
+
+// GET /api/v1/portfolio: the crypto held now, across sources.
+func (s *Server) v1Portfolio(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	l, err := s.eng.Ledger(ctx)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	srcs := s.sourceMap(ctx)
+	ccy := s.eng.Currency(ctx)
+	pctx, cancel := context.WithTimeout(ctx, priceWait)
+	defer cancel()
+	at := s.eng.Now().UTC()
+	p := portfolio.Now(l.Acts, l.In, s.eng.UnitPrice(pctx, ccy), at)
+
+	type heldIn struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Qty  string `json:"qty"`
+	}
+	type held struct {
+		Asset      model.Asset `json:"asset"`
+		Qty        string      `json:"qty"`
+		Price      string      `json:"price"`
+		Value      string      `json:"value"`
+		Cost       string      `json:"cost"`
+		Unrealized string      `json:"unrealized"`
+		Share      string      `json:"share"`
+		Sources    []heldIn    `json:"sources"`
+	}
+	type worth struct {
+		v1Source
+		Value string `json:"value"`
+	}
+	out := []held{}
+	for _, h := range p.Assets {
+		v := held{h.Asset, h.Qty.String(), unitPrice(h.Price), money(h.Value), money(h.Cost), money(h.Unrealized),
+			h.Share.StringFixed(3), []heldIn{}}
+		for _, q := range h.Sources {
+			v.Sources = append(v.Sources, heldIn{q.Source, srcs[q.Source].Name, q.Amount.String()})
+		}
+		out = append(out, v)
+	}
+	bySource := []worth{}
+	for _, v := range p.Sources {
+		src := srcs[v.Source]
+		src.ID = v.Source
+		bySource = append(bySource, worth{src, money(v.Amount)})
+	}
+	writeJSON(w, map[string]any{
+		"currency": ccy,
+		"at":       at,
+		"total": map[string]string{"value": money(p.Value), "invested": money(p.Invested), "cost": money(p.Cost),
+			"unrealized": money(p.Unrealized), "realized": money(p.Realized), "rewards": money(p.Rewards)},
+		"assets":   out,
+		"sources":  bySource,
+		"unpriced": assets(p.Unpriced),
+	})
+}
+
+// GET /api/v1/portfolio/history?from=&to=&step=day|week|month
+func (s *Server) v1History(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := r.URL.Query()
+	step := q.Get("step")
+	if step == "" {
+		step = "day"
+	}
+	if step != "day" && step != "week" && step != "month" {
+		writeErr(w, 400, "step: day, week or month")
+		return
+	}
+	l, err := s.eng.Ledger(ctx)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	today := s.eng.Now().UTC().Truncate(24 * time.Hour)
+	from, to := portfolio.First(l.Acts), today
+	for name, d := range map[string]*time.Time{"from": &from, "to": &to} {
+		if v := q.Get(name); v != "" {
+			t, err := time.Parse(time.DateOnly, v)
+			if err != nil {
+				writeErr(w, 400, name+": YYYY-MM-DD")
+				return
+			}
+			*d = t
+		}
+	}
+	if to.After(today) {
+		to = today
+	}
+	ccy := s.eng.Currency(ctx)
+	if from.IsZero() || from.After(to) {
+		writeJSON(w, map[string]any{"currency": ccy, "points": []any{}, "unpriced": []model.Asset{}})
+		return
+	}
+	days := portfolio.Days(from, to, step)
+	if days == nil {
+		writeErr(w, 422, "more than 3700 points: use step=week or month, or a shorter range")
+		return
+	}
+	pctx, cancel := context.WithTimeout(ctx, priceWait)
+	defer cancel()
+	points, unpriced := portfolio.History(l.Acts, l.In, s.eng.UnitPrice(pctx, ccy), days)
+	type point struct {
+		Date     string `json:"date"`
+		Value    string `json:"value"`
+		Invested string `json:"invested"`
+	}
+	out := make([]point, 0, len(points))
+	for _, p := range points {
+		out = append(out, point{p.Day.Format(time.DateOnly), money(p.Value), money(p.Invested)})
+	}
+	writeJSON(w, map[string]any{"currency": ccy, "points": out, "unpriced": assets(unpriced)})
+}
+
+// GET /api/v1/tax/fr?year=&rewards=income: the year's formulaire 2086.
+func (s *Server) v1TaxFR(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := r.URL.Query()
+	now := s.eng.Now().UTC()
+	year := atoi(q.Get("year"), now.Year()-1)
+	if year < 2009 || year > now.Year() {
+		writeErr(w, 400, "year: 2009 to "+strconv.Itoa(now.Year()))
+		return
+	}
+	rewards := q.Get("rewards")
+	if rewards != "" && rewards != "income" {
+		writeErr(w, 400, "rewards: income, or leave it out")
+		return
+	}
+	l, err := s.eng.Ledger(ctx)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	srcs := s.sourceMap(ctx)
+	pctx, cancel := context.WithTimeout(ctx, priceWait)
+	defer cancel()
+	t := portfolio.TaxFR(l.Acts, l.In, s.eng.UnitPrice(pctx, "EUR"), year, rewards == "income")
+	type src struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	type line struct {
+		Time         time.Time   `json:"time"`
+		Source       src         `json:"source"`
+		Asset        model.Asset `json:"asset"`
+		Qty          string      `json:"qty"`
+		Price        string      `json:"price"`
+		Fees         string      `json:"fees"`
+		Portfolio    string      `json:"portfolio"`
+		Acquisition  string      `json:"acquisition"`
+		CapitalShare string      `json:"capitalShare"`
+		Gain         string      `json:"gain"`
+	}
+	lines := []line{}
+	for _, d := range t.Disposals {
+		lines = append(lines, line{d.Time.UTC(), src{d.Source, srcs[d.Source].Name}, d.Sold.Asset, d.Sold.Qty.String(),
+			money(d.Price), money(d.Fees), money(d.Portfolio), money(d.Acquisition), money(d.CapitalShare), money(d.Gain)})
+	}
+	writeJSON(w, map[string]any{
+		"year":      t.Year,
+		"currency":  "EUR",
+		"disposals": lines,
+		"total": map[string]any{"disposals": money(t.Total), "gain": money(t.Gain), "exempt": t.Exempt,
+			"tax": money(t.Tax), "rate": t.Rate.StringFixed(3)},
+		"notes": t.Notes,
+	})
 }
 
 // GET /api/v1/activities.csv?format=fundarr|koinly&source=…
