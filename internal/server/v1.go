@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Alexis-Marcel/fundarr/internal/engine"
 	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/portfolio"
 	"github.com/shopspring/decimal"
@@ -59,20 +60,32 @@ func (s *Server) activitiesV1(r *http.Request) ([]v1Activity, error) {
 	if err != nil {
 		return nil, err
 	}
-	srcs := s.sourceMap(ctx)
-	ccy := s.eng.Currency(ctx)
-	costs := s.eng.Costs(ctx, l, ccy)
 	q := r.URL.Query()
 	since, _ := time.Parse(time.RFC3339, q.Get("since"))
 	until, _ := time.Parse(time.RFC3339, q.Get("until"))
 	out := []v1Activity{}
+	for _, v := range s.views(ctx, l, s.eng.Currency(ctx)) {
+		if src := q.Get("source"); src != "" && v.SourceID != src {
+			continue
+		}
+		if !since.IsZero() && v.Time.Before(since) || !until.IsZero() && !v.Time.Before(until) {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// views is every activity as the API shows it, oldest first; costs are in
+// ccy, left out when ccy is "".
+func (s *Server) views(ctx context.Context, l *engine.Ledger, ccy string) []v1Activity {
+	srcs := s.sourceMap(ctx)
+	var costs map[string]decimal.Decimal
+	if ccy != "" {
+		costs = s.eng.Costs(ctx, l, ccy)
+	}
+	out := make([]v1Activity, 0, len(l.Acts))
 	for _, a := range l.Acts {
-		if src := q.Get("source"); src != "" && a.SourceID != src {
-			continue
-		}
-		if !since.IsZero() && a.Time.Before(since) || !until.IsZero() && !a.Time.Before(until) {
-			continue
-		}
 		v := v1Activity{Activity: a, Source: srcs[a.SourceID], Correction: a.Type == model.Adjustment}
 		if c, ok := costs[a.ID]; ok {
 			v.Cost, v.Currency = c.StringFixed(2), ccy
@@ -90,7 +103,7 @@ func (s *Server) activitiesV1(r *http.Request) ([]v1Activity, error) {
 		}
 		return out[i].ID < out[j].ID
 	})
-	return out, nil
+	return out
 }
 
 func (s *Server) sourceMap(ctx context.Context) map[string]v1Source {

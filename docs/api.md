@@ -59,6 +59,49 @@ Every activity of every source, oldest first.
 
 The same list as a CSV file: every field (`fundarr`), or Koinly's universal format (`koinly`). `source` filters one source.
 
+## `GET /api/v1/changes`
+
+For an app that keeps its own copy of the history: the first call (no `after`) returns every activity; each next call, with the `cursor` of the previous answer, returns what was added, rewritten or removed since, in order.
+
+| Parameter | |
+|---|---|
+| `after` | the `cursor` of the previous answer; leave it out for a first copy |
+| `limit` | 1 to 5000, default 1000 |
+
+```json
+{
+  "changes": [
+    { "op": "upsert", "id": "6f1c…", "activity": { "id": "6f1c…", "source": { "id": "9b68…", "name": "Binance", "kind": "binance" }, "type": "deposit", "transferWith": "a2e0…", … } },
+    { "op": "remove", "id": "d93b…" }
+  ],
+  "cursor": "4e1a9c02.1873",
+  "more": false
+}
+```
+
+- `upsert`: add the activity, or replace the one with this `id`. It has the shape of `/api/v1/activities`, without `cost` and `currency` (they move with prices and Settings → Valuation, not with the history: compute them, or read `/api/v1/activities`).
+- `remove`: delete the activity with this `id`; one you do not have is a no-op.
+- `cursor`: opaque; store it with your copy and pass it as `after` next time, even when `changes` is empty. While `more` is true, call again right away.
+- Each activity appears once, in its latest state. Everything that rewrites history shows: new syncs, balance corrections made, recomputed or reclassified, a statement replacing a period, transfers paired or unpaired, a source renamed (`source.name`) or removed (all its activities).
+- Corrections (`correction: true`) appear as soon as Fundarr makes them, like in `/api/v1/activities`; they may be removed by a later sync when the platform's history catches up.
+- **410**: the cursor is too old (removals are kept 180 days) or from another Fundarr (a new database, a restarted demo): drop your copy and start again without `after`.
+
+### Notify
+
+So the app does not have to poll: in **Apps**, the app → **Notify**, give an address. After changes Fundarr POSTs to it (bursts are told once, a few retries if it fails, syncs never wait):
+
+```json
+{ "event": "changes", "cursor": "4e1a9c02.1873" }
+```
+
+No data: call `/api/v1/changes` from your own cursor. The secret shown once when the address is saved signs each call:
+
+```
+Fundarr-Signature: t=1729425600,v1=5d2c…
+```
+
+`v1` is the hex HMAC-SHA256 of `<t>.<body>` with the secret; check it, and that `t` is recent. Saving the address again makes a new secret.
+
 ## `GET /api/v1/holdings`
 
 What each source reported holding at its last sync.

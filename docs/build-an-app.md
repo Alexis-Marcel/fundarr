@@ -37,6 +37,19 @@ A token reads your whole history. Never put it in a web page or a mobile app: an
 
 In Fundarr, **Apps → Add app → Other app**: name it, then copy the API URL and the token, shown once. Remove the app there to revoke its token.
 
+## Keep your own copy
+
+An app with its own database stays in sync with [`/api/v1/changes`](api.md#get-apiv1changes):
+
+1. Call `GET /api/v1/changes` without `after`: every activity.
+2. Apply each change in order: `upsert` adds or replaces the activity with that `id`, `remove` deletes it. Store the `cursor` with your data, in the same transaction.
+3. While `more` is true, call again with `after=<cursor>`. Later, call again from the stored cursor: only what changed comes back.
+4. On **410**, the cursor is too old: empty your copy and start at 1.
+
+To be told instead of polling, give the app a notify address in **Apps → Notify**; Fundarr POSTs `{"event":"changes","cursor":…}` there, signed with a secret shown once.
+
+Costs are not in the feed: they depend on prices and on the currency, not only on the history. Read them from `/api/v1/activities`, or compute your own.
+
 ## A full example
 
 [Cairn](https://github.com/Alexis-Marcel/cairn) is a small app built this way: a portfolio dashboard and the 2086 form, a Go server holding the token and a React UI.

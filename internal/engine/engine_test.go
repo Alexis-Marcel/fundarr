@@ -122,10 +122,12 @@ func TestSyncPushReconcile(t *testing.T) {
 	fakeActs = []model.Activity{dep("1", "1", t0), dep("2", "0.5", t0.Add(time.Hour))}
 	fakeBal = []model.Balance{{Amount: model.Amt(model.CryptoOrFiat("BTC"), "1.5")}}
 	sinkFail["2"] = true
+	changed := 0
+	e.OnChange = func() { changed++ }
 
 	res, err := e.Sync(ctx, "s")
-	if err != nil || res.Fetched != 2 || res.New != 2 || len(res.Gaps) != 0 {
-		t.Fatalf("sync %+v %v", res, err)
+	if err != nil || res.Fetched != 2 || res.New != 2 || len(res.Gaps) != 0 || changed != 1 {
+		t.Fatalf("sync %+v %v, %d change(s) told", res, err, changed)
 	}
 	if len(sink) != 1 || sink[0].Account != "a1" || sink[0].SourceName != "Fake" || len(sink[0].Activities) != 2 {
 		t.Fatalf("pushed %+v", sink)

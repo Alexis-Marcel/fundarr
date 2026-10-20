@@ -70,7 +70,9 @@ func TestDemo(t *testing.T) {
 	eng := engine.New(st, box, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	eng.Prices = price.New(st, nil)
 	eng.Prices.Market = demo.Market
-	srv, err := New(context.Background(), Config{Engine: eng, Demo: true, Auth: AuthConfig{Mode: "none"}})
+	bg, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(context.Background(), Config{Engine: eng, Demo: true, Auth: AuthConfig{Mode: "none"}, Background: bg})
 	if err != nil {
 		t.Fatal(err)
 	}

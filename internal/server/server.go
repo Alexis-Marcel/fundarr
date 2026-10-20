@@ -45,7 +45,8 @@ type Server struct {
 	st   *store.Store
 	mux  *http.ServeMux
 	// v1 lists the read API's routes ("GET /api/v1/…"), as registered.
-	v1 []string
+	v1   []string
+	feed *feed
 }
 
 func New(ctx context.Context, cfg Config) (*Server, error) {
@@ -56,7 +57,14 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.Background == nil {
 		cfg.Background = context.Background()
 	}
-	s := &Server{cfg: cfg, auth: a, eng: cfg.Engine, st: cfg.Engine.Store, mux: http.NewServeMux()}
+	if cfg.Log == nil {
+		cfg.Log = slog.Default()
+	}
+	s := &Server{cfg: cfg, auth: a, eng: cfg.Engine, st: cfg.Engine.Store, mux: http.NewServeMux(), feed: newFeed()}
+	s.eng.OnChange = s.changed
+	if s.st != nil {
+		go s.notifyLoop(cfg.Background)
+	}
 	s.routes()
 	return s, nil
 }
@@ -120,6 +128,7 @@ func (s *Server) routes() {
 	api("GET /api/tokens", s.listTokens)
 	api("POST /api/tokens", s.createToken)
 	api("DELETE /api/tokens/{id}", s.deleteToken)
+	api("PUT /api/tokens/{id}/notify", s.putNotify)
 	// The stable read API: a session or an API token.
 	read := func(pattern string, h http.HandlerFunc) {
 		s.v1 = append(s.v1, pattern)
@@ -132,6 +141,7 @@ func (s *Server) routes() {
 	read("GET /api/v1/sources", s.v1Sources)
 	read("GET /api/v1/activities", s.v1Activities)
 	read("GET /api/v1/activities.csv", s.v1CSV)
+	read("GET /api/v1/changes", s.v1Changes)
 	read("GET /api/v1/holdings", s.v1Holdings)
 	read("GET /api/v1/portfolio", s.v1Portfolio)
 	read("GET /api/v1/portfolio/history", s.v1History)
@@ -620,6 +630,7 @@ func (s *Server) updateSource(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.changed() // its name is in every activity
 	if in.Adjust != nil {
 		if err := s.eng.Readjust(r.Context(), e.ID); err != nil && !errors.Is(err, engine.ErrBusy) {
 			writeErr(w, 500, err.Error())
@@ -634,6 +645,7 @@ func (s *Server) deleteSource(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.changed()
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
