@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
 // Slow paths: these cost 150 IP weight (6000 a minute) or 3000 UID weight

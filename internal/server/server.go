@@ -21,9 +21,9 @@ import (
 	"github.com/Alexis-Marcel/fundarr/docs"
 	"github.com/Alexis-Marcel/fundarr/internal/dest"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
-	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
 	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 )
 
 type Config struct {

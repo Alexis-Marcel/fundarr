@@ -1,6 +1,12 @@
 // Package model is the common language between sources and destinations:
 // every platform's history is normalized into Activities, every platform's
 // holdings into Balances. Amounts are exact decimals, never floats.
+//
+// It also holds what is computed across sources: transfers between your
+// own accounts (PairTransfers), cost basis by replaying the history with
+// average cost per source, transfers carrying their cost (Books, Costs),
+// and the balance check (Reconcile, Adjustments). Activities from Fundarr's
+// API decode into Activity; see pkg/api.
 package model
 
 import (

@@ -83,7 +83,7 @@ Details and limits per platform: [docs/sources.md](docs/sources.md). Next: Trade
 curl -H "Authorization: Bearer fdr_…" http://localhost:9494/api/v1/portfolio
 ```
 
-The read API serves every activity, the holdings, the portfolio and its history, and the French 2086 form, already computed. Develop against the demo (`FUNDARR_DEMO=1`, token `fdr_demo`). Start with [Build an app](docs/build-an-app.md); the full contract is in [api.md](docs/api.md) and [openapi.yaml](docs/openapi.yaml). Cairn is a complete example.
+The read API serves every activity, the holdings, the portfolio and its history, and the French 2086 form, already computed. An app with its own database stays in sync through a changes feed (`/api/v1/changes`, with an optional notification), and a Go app can reuse Fundarr's cost, portfolio and tax code (`pkg/`). Develop against the demo (`FUNDARR_DEMO=1`, token `fdr_demo`). Start with [Build an app](docs/build-an-app.md); the full contract is in [api.md](docs/api.md) and [openapi.yaml](docs/openapi.yaml). Cairn is a complete example.
 
 ## What Fundarr does
 

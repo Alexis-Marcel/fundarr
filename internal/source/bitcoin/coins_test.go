@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/base58"
 )

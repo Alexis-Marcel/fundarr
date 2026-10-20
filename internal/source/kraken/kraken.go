@@ -29,8 +29,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
 	"github.com/Alexis-Marcel/fundarr/internal/source"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/shopspring/decimal"
 )
 

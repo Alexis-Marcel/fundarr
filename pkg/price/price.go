@@ -1,7 +1,14 @@
 // Package price values assets on a given day, in a given currency, from
 // free public market data: Binance and OKX daily candles for crypto, the
 // European Central Bank's reference rates (through Frankfurter) between
-// currencies. Prices are kept in the database: each day is asked once.
+// currencies. No account or key is needed. Prices are kept in memory and,
+// with a Cache, across restarts: each day is asked once.
+//
+//	p := price.New(nil, http.DefaultClient) // memory only
+//	eur, err := p.Price(ctx, model.CryptoOrFiat("BTC"), day, "EUR")
+//
+// UnitPrice adapts a Service to what pkg/portfolio expects; any other
+// source of prices with that signature works too.
 package price
 
 import (
@@ -18,16 +25,30 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Alexis-Marcel/fundarr/internal/model"
-	"github.com/Alexis-Marcel/fundarr/internal/store"
+	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/shopspring/decimal"
 )
 
 const day = 24 * time.Hour
 
+// Window is a range of days already asked to a provider for a market.
+type Window struct {
+	From, To string // YYYY-MM-DD
+	Fetched  time.Time
+}
+
+// Cache keeps closes between runs. Pairs are a provider and a market
+// ("binance:BTCEUR", "fx:USDEUR"); days are YYYY-MM-DD and closes decimal
+// strings. Fundarr's store is one.
+type Cache interface {
+	PriceSeries(ctx context.Context, pair string) (map[string]string, error)
+	PriceWindows(ctx context.Context, pair string) ([]Window, error)
+	PutPrices(ctx context.Context, pair string, w Window, closes map[string]string) error
+}
+
 // Service answers "what was this worth that day". Safe for concurrent use.
 type Service struct {
-	Store *store.Store
+	Cache Cache // nil: memory only
 	HTTP  *http.Client
 	Now   func() time.Time
 	// Provider endpoints, replaceable in tests.
@@ -39,19 +60,23 @@ type Service struct {
 
 	mu     sync.Mutex
 	series map[string]map[string]decimal.Decimal // pair → day → close
-	wins   map[string][]store.PriceWindow
+	wins   map[string][]Window
 }
 
-func New(st *store.Store, client *http.Client) *Service {
+// New makes a service asking the public providers; cache may be nil.
+func New(cache Cache, client *http.Client) *Service {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	return &Service{
-		Store:      st,
+		Cache:      cache,
 		HTTP:       client,
 		Now:        func() time.Time { return time.Now().UTC() },
 		BinanceURL: "https://data-api.binance.vision",
 		OKXURL:     "https://www.okx.com",
 		FXURL:      "https://api.frankfurter.dev/v1",
 		series:     map[string]map[string]decimal.Decimal{},
-		wins:       map[string][]store.PriceWindow{},
+		wins:       map[string][]Window{},
 	}
 }
 
@@ -64,6 +89,15 @@ func (s *Service) Valuer(ctx context.Context, ccy string) model.Valuer {
 			return decimal.Zero, false
 		}
 		return p.Mul(a.Qty), true
+	}
+}
+
+// UnitPrice prices one unit of an asset on the day of at, in ccy, never
+// failing: ok is false when no price is known. It fits portfolio.Price.
+func (s *Service) UnitPrice(ctx context.Context, ccy string) func(a model.Asset, at time.Time) (decimal.Decimal, bool) {
+	return func(a model.Asset, at time.Time) (decimal.Decimal, bool) {
+		p, err := s.Price(ctx, a, at, ccy)
+		return p, err == nil
 	}
 }
 
@@ -206,17 +240,21 @@ func (s *Service) load(ctx context.Context, pair string) error {
 	if _, ok := s.series[pair]; ok {
 		return nil
 	}
-	raw, err := s.Store.PriceSeries(ctx, pair)
+	ser := map[string]decimal.Decimal{}
+	if s.Cache == nil {
+		s.series[pair] = ser
+		return nil
+	}
+	raw, err := s.Cache.PriceSeries(ctx, pair)
 	if err != nil {
 		return err
 	}
-	ser := map[string]decimal.Decimal{}
 	for d, p := range raw {
 		if v, err := decimal.NewFromString(p); err == nil {
 			ser[d] = v
 		}
 	}
-	wins, err := s.Store.PriceWindows(ctx, pair)
+	wins, err := s.Cache.PriceWindows(ctx, pair)
 	if err != nil {
 		return err
 	}
@@ -266,7 +304,7 @@ func (s *Service) fetch(ctx context.Context, pair string, at time.Time) error {
 		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) { return s.Market(pair, from, to), nil }
 	}
 	closes, err := ask(from, to)
-	w := store.PriceWindow{From: dayOf(from), To: dayOf(to), Fetched: now}
+	w := Window{From: dayOf(from), To: dayOf(to), Fetched: now}
 	if errors.Is(err, errUnknownMarket) {
 		w.From, w.To, closes, err = unknownFrom, "9999-12-31", nil, nil
 	}
@@ -278,8 +316,10 @@ func (s *Service) fetch(ctx context.Context, pair string, at time.Time) error {
 		raw[d] = p.String()
 		s.series[pair][d] = p
 	}
-	if err := s.Store.PutPrices(ctx, pair, w, raw); err != nil {
-		return err
+	if s.Cache != nil {
+		if err := s.Cache.PutPrices(ctx, pair, w, raw); err != nil {
+			return err
+		}
 	}
 	s.wins[pair] = append(s.wins[pair], w)
 	return nil
