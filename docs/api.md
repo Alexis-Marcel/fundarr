@@ -2,13 +2,15 @@
 
 Any program can read what Fundarr knows, for trackers Fundarr does not push to, scripts and automations.
 
-Create a token in **Settings → Export and API**, then send it with each request:
+In Fundarr, **Apps → Add app → Other app** (or Cairn) makes a token; send it with each request:
 
 ```
 Authorization: Bearer fdr_…
 ```
 
-A token only reads `/api/v1`; it cannot change anything. Revoke it in Settings.
+A token only reads `/api/v1`; it cannot change anything. Remove the app to revoke it.
+
+The routes are also described in [`openapi.yaml`](openapi.yaml), served at `GET /api/v1/openapi.yaml` (no token needed). To try them without accounts, run Fundarr with `FUNDARR_DEMO=1`: see [Build an app](build-an-app.md).
 
 ## `GET /api/v1/sources`
 
