@@ -18,15 +18,14 @@ import (
 // read the history with an API token (Authorization: Bearer fdr_…), so a
 // tracker Fundarr does not push to still gets the data. See docs/api.md.
 
-// reader lets in a signed-in user or a live API token, for reads only.
+// reader lets in a live API token (marked used) or a signed-in user, for
+// reads only.
 func (s *Server) reader(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.auth.user(r) == "" {
-			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if !ok || !s.st.CheckAPIToken(r.Context(), strings.TrimSpace(token)) {
-				writeErr(w, http.StatusUnauthorized, "sign in, or send an API token: Authorization: Bearer fdr_…")
-				return
-			}
+		token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !(bearer && s.st.CheckAPIToken(r.Context(), strings.TrimSpace(token))) && s.auth.user(r) == "" {
+			writeErr(w, http.StatusUnauthorized, "sign in, or send an API token: Authorization: Bearer fdr_…")
+			return
 		}
 		h(w, r)
 	}

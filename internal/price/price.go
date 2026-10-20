@@ -32,6 +32,10 @@ type Service struct {
 	Now   func() time.Time
 	// Provider endpoints, replaceable in tests.
 	BinanceURL, OKXURL, FXURL string
+	// Market, when set, answers instead of the providers (no network): the
+	// closes of pair ("binance:BTCEUR", "fx:USDEUR"…) from from to to. A
+	// market it does not know has no closes.
+	Market func(pair string, from, to time.Time) map[string]decimal.Decimal
 
 	mu     sync.Mutex
 	series map[string]map[string]decimal.Decimal // pair → day → close
@@ -231,8 +235,7 @@ func (s *Service) fetch(ctx context.Context, pair string, at time.Time) error {
 	provider, market, _ := strings.Cut(pair, ":")
 	now := s.Now()
 	var from, to time.Time
-	var closes map[string]decimal.Decimal
-	var err error
+	var ask func(from, to time.Time) (map[string]decimal.Decimal, error)
 	switch provider {
 	case "binance":
 		// 1000 daily candles per call: most of the window lies before at,
@@ -241,22 +244,28 @@ func (s *Service) fetch(ctx context.Context, pair string, at time.Time) error {
 		if to.After(now) {
 			to, from = now, now.Add(-999*day)
 		}
-		closes, err = s.binance(ctx, market, from, to)
+		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) { return s.binance(ctx, market, from, to) }
 	case "okx":
 		from, to = at.Add(-200*day), at.Add(99*day)
 		if to.After(now) {
 			to, from = now, now.Add(-299*day)
 		}
-		closes, err = s.okx(ctx, market, from, to)
+		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) { return s.okx(ctx, market, from, to) }
 	case "fx":
 		from, to = at.Add(-300*day), at.Add(64*day)
 		if to.After(now) {
 			to, from = now, now.Add(-364*day)
 		}
-		closes, err = s.frankfurter(ctx, market[:3], market[3:], from, to)
+		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) {
+			return s.frankfurter(ctx, market[:3], market[3:], from, to)
+		}
 	default:
 		return fmt.Errorf("price: unknown provider %q", provider)
 	}
+	if s.Market != nil {
+		ask = func(from, to time.Time) (map[string]decimal.Decimal, error) { return s.Market(pair, from, to), nil }
+	}
+	closes, err := ask(from, to)
 	w := store.PriceWindow{From: dayOf(from), To: dayOf(to), Fetched: now}
 	if errors.Is(err, errUnknownMarket) {
 		w.From, w.To, closes, err = unknownFrom, "9999-12-31", nil, nil

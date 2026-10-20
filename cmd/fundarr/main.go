@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Alexis-Marcel/fundarr/internal/demo"
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
 	"github.com/Alexis-Marcel/fundarr/internal/price"
 	"github.com/Alexis-Marcel/fundarr/internal/secret"
@@ -76,32 +78,29 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
-	dataDir := env("FUNDARR_DATA", "data")
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return err
-	}
-	master, created, err := secret.LoadMaster(os.Getenv("FUNDARR_SECRET_KEY"), dataDir)
-	if err != nil {
-		return err
-	}
-	if created {
-		log.Warn("created a new master key: back up " + filepath.Join(dataDir, "secret.key") + " with the database, credentials cannot be read without it")
-	}
-	box, err := secret.New(master)
-	if err != nil {
-		return err
-	}
-	st, err := store.Open(filepath.Join(dataDir, "fundarr.db"))
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	if n, err := st.CloseInterrupted(context.Background()); err == nil && n > 0 {
-		log.Info("marked runs interrupted by the last stop", "count", n)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	demoMode := isTrue(os.Getenv("FUNDARR_DEMO"))
+	var st *store.Store
+	var box *secret.Box
+	var err error
+	if demoMode {
+		// Made-up data in memory: FUNDARR_DATA is not even created.
+		if st, err = demo.Open(ctx, time.Now().UTC()); err != nil {
+			return err
+		}
+		key := make([]byte, 32)
+		rand.Read(key)
+		if box, err = secret.New(key); err != nil {
+			return err
+		}
+	} else {
+		if st, box, err = open(log); err != nil {
+			return err
+		}
+	}
+	defer st.Close()
 
 	eng := engine.New(st, box, log)
 	eng.Prices = price.New(st, &http.Client{Timeout: 30 * time.Second})
@@ -114,12 +113,17 @@ func run(log *slog.Logger) error {
 			mode = "oidc"
 		}
 	}
+	if demoMode {
+		eng.Prices.Market = demo.Market
+		mode = "none"
+	}
 	static, err := fs.Sub(web.Dist, "dist")
 	if err != nil {
 		return err
 	}
 	srv, err := server.New(ctx, server.Config{
 		Engine:     eng,
+		Demo:       demoMode,
 		Static:     static,
 		Version:    version,
 		Log:        log,
@@ -143,7 +147,11 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	go eng.Run(ctx)
+	if demoMode {
+		log.Warn("demo mode: made-up data in memory, no sign-in, no syncs; any token reads /api/v1")
+	} else {
+		go eng.Run(ctx)
+	}
 
 	addr := env("FUNDARR_ADDR", ":9494")
 	hs := &http.Server{Addr: addr, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
@@ -158,6 +166,41 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// open opens the data directory: the master key and the database.
+func open(log *slog.Logger) (*store.Store, *secret.Box, error) {
+	dataDir := env("FUNDARR_DATA", "data")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, nil, err
+	}
+	master, created, err := secret.LoadMaster(os.Getenv("FUNDARR_SECRET_KEY"), dataDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if created {
+		log.Warn("created a new master key: back up " + filepath.Join(dataDir, "secret.key") + " with the database, credentials cannot be read without it")
+	}
+	box, err := secret.New(master)
+	if err != nil {
+		return nil, nil, err
+	}
+	st, err := store.Open(filepath.Join(dataDir, "fundarr.db"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if n, err := st.CloseInterrupted(context.Background()); err == nil && n > 0 {
+		log.Info("marked runs interrupted by the last stop", "count", n)
+	}
+	return st, box, nil
+}
+
+func isTrue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // health is the container healthcheck (the image has no shell or curl).
