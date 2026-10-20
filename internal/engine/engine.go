@@ -3,12 +3,14 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +42,7 @@ type Engine struct {
 
 	mu      sync.Mutex
 	running map[string]bool
+	logins  map[string]*login
 }
 
 func New(st *store.Store, box *secret.Box, log *slog.Logger) *Engine {
@@ -168,6 +171,12 @@ type SyncResult struct {
 
 // Build instantiates the connector of a configured source.
 func (e *Engine) Build(ent *store.Entity) (source.Source, error) {
+	return e.build(ent, nil)
+}
+
+// build makes the connector; logf, when set, gets what it does outside a
+// sync (a sign-in).
+func (e *Engine) build(ent *store.Entity, logf func(string, ...any)) (source.Source, error) {
 	def, err := source.Get(ent.Kind)
 	if err != nil {
 		return nil, err
@@ -176,7 +185,45 @@ func (e *Engine) Build(ent *store.Entity) (source.Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	return def.New(source.Config{Values: vals, HTTP: e.HTTP, State: ent.State})
+	state, err := e.openState(ent)
+	if err != nil {
+		return nil, err
+	}
+	return def.New(source.Config{Values: vals, HTTP: e.HTTP, State: state, Log: logf})
+}
+
+// sealedState marks a state stored encrypted (Definition.SealState).
+var sealedState = []byte("fundarr-sealed:")
+
+func (e *Engine) openState(ent *store.Entity) ([]byte, error) {
+	if !bytes.HasPrefix(ent.State, sealedState) {
+		return ent.State, nil
+	}
+	if e.Box == nil {
+		return nil, errors.New("the source's state is encrypted and no key is loaded")
+	}
+	raw, err := e.Box.Open(ent.State[len(sealedState):])
+	if err != nil {
+		// A state that cannot be read is a session lost: start again.
+		e.Log.Warn("source state unreadable, starting afresh", "source", ent.Name)
+		return nil, nil
+	}
+	return raw, nil
+}
+
+// sealState encrypts a connector's state when its definition asks for it.
+func (e *Engine) sealState(kind string, raw []byte) []byte {
+	def, err := source.Get(kind)
+	if err != nil || !def.SealState || e.Box == nil || len(raw) == 0 {
+		return raw
+	}
+	return append(append([]byte{}, sealedState...), e.Box.Seal(raw)...)
+}
+
+// NeedsLogin reports whether a sync of the source failed for want of a
+// sign-in (and waits for the user).
+func NeedsLogin(ent *store.Entity) bool {
+	return strings.Contains(ent.LastErr, source.ErrLogin.Error())
 }
 
 // Sync fetches a source's history and balances, then pushes to its routes.
@@ -209,7 +256,11 @@ func (e *Engine) sync0(ctx context.Context, id string, full bool) (*SyncResult, 
 	if err != nil {
 		log.add("error: %v", err)
 	}
-	_ = e.Store.SourceRan(ctx, id, started, err, state)
+	if errors.Is(err, source.ErrLogin) && state != nil {
+		// The session is gone: keep the state that says so.
+		_ = e.Store.PutSourceState(ctx, id, e.sealState(ent.Kind, state))
+	}
+	_ = e.Store.SourceRan(ctx, id, started, err, e.sealState(ent.Kind, state))
 	summary := ""
 	if res != nil {
 		summary = fmt.Sprintf("%d fetched, %d new", res.Fetched, res.New)
@@ -240,74 +291,52 @@ func (e *Engine) sync(ctx context.Context, ent *store.Entity, log *runLog) (*Syn
 	if err != nil {
 		return nil, nil, err
 	}
-	// Imported statements are the reference for their period.
-	stmts, err := e.Store.Statements(ctx, ent.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-	covered := func(t time.Time) bool {
-		for _, s := range stmts {
-			if !t.Before(s.From) && !t.After(s.To) {
-				return true
-			}
-		}
-		return false
-	}
-	skipped := 0
 	res := &SyncResult{}
-	var batch []model.Activity
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
+	offline := false
+	if o, ok := src.(source.Offline); ok && o.Offline() {
+		offline = true
+		log.add("nothing to fetch: the history comes from imported statements")
+	}
+	if ia, ok := src.(source.Interactive); ok && !offline {
+		if ses := ia.Session(); !ses.Valid(e.Now()) {
+			log.add("no session: approve a sign-in to sync")
+			return res, nil, source.ErrLogin
 		}
-		n, err := e.Store.AddActivities(ctx, batch)
-		res.New += n
-		batch = batch[:0]
-		return err
 	}
-	fetch := source.Fetch{
-		Since:    ent.LastOK,
-		Progress: log.add,
-		Emit: func(a model.Activity) error {
-			if a.NativeID == "" || a.Time.IsZero() || a.Type == "" {
-				return fmt.Errorf("connector emitted an incomplete activity: %+v", a)
-			}
-			a.SourceID = ent.ID
-			a.ID = model.ActivityID(ent.ID, a.NativeID)
-			a.Time = a.Time.UTC()
-			if covered(a.Time) {
-				skipped++
-				return nil
-			}
-			res.Fetched++
-			batch = append(batch, a)
-			if len(batch) >= 500 {
-				return flush()
-			}
-			return nil
-		},
-	}
-	if ent.LastOK.IsZero() {
-		log.add("first sync: fetching the whole history")
-	} else {
-		log.add("fetching since %s", ent.LastOK.Format(time.RFC3339))
-	}
-	if err := src.Activities(ctx, fetch); err != nil {
-		_ = flush() // keep what was fetched; the next run dedupes
-		return res, nil, err
-	}
-	if err := flush(); err != nil {
-		return res, nil, err
-	}
-	log.add("%d activities fetched, %d new", res.Fetched, res.New)
-	if skipped > 0 {
-		log.add("%d activities inside an imported statement's period left to the statement", skipped)
+	fetch := source.Fetch{Since: ent.LastOK, Progress: log.add}
+	if sf, ok := src.(source.StatementFetcher); ok && !offline {
+		name, data, err := sf.FetchStatement(ctx, fetch)
+		if err != nil {
+			return res, src.State(), err
+		}
+		ir, err := e.importFile(ctx, ent, src, name, data, log)
+		if err != nil {
+			return res, src.State(), err
+		}
+		res.Fetched, res.New = ir.Activities, ir.Activities-ir.Replaced
+		if res.New < 0 {
+			res.New = 0
+		}
+	} else if !offline {
+		if err := e.fetchActivities(ctx, ent, src, fetch, log, res); err != nil {
+			return res, src.State(), err
+		}
 	}
 	bal, err := src.Balances(ctx)
-	if err != nil {
-		return res, nil, fmt.Errorf("balances: %w", err)
+	derived := false
+	if errors.Is(err, source.ErrNoBalances) {
+		if !offline {
+			log.add("balances not read from the platform (%v): taken from the history", err)
+		}
+		if bal, err = e.derivedBalances(ctx, ent.ID); err != nil {
+			return res, nil, err
+		}
+		derived = true
 	}
-	if err := e.Store.PutBalances(ctx, ent.ID, e.Now(), bal); err != nil {
+	if err != nil {
+		return res, src.State(), fmt.Errorf("balances: %w", err)
+	}
+	if err := e.Store.PutBalancesFrom(ctx, ent.ID, e.Now(), bal, derived); err != nil {
 		return res, nil, err
 	}
 	log.add("%d balances", len(bal))
@@ -326,6 +355,99 @@ func (e *Engine) sync(ctx context.Context, ent *store.Entity, log *runLog) (*Syn
 		log.add("%d asset(s) corrected so balances match; corrections wait %s before going to destinations", res.Adjusted, Hold)
 	}
 	return res, src.State(), nil
+}
+
+// fetchActivities runs a connector's Activities and stores what is new.
+func (e *Engine) fetchActivities(ctx context.Context, ent *store.Entity, src source.Source, fetch source.Fetch, log *runLog, res *SyncResult) error {
+	// Imported statements are the reference for their period.
+	stmts, err := e.Store.Statements(ctx, ent.ID)
+	if err != nil {
+		return err
+	}
+	covered := func(t time.Time) bool {
+		for _, s := range stmts {
+			if !t.Before(s.From) && !t.After(s.To) {
+				return true
+			}
+		}
+		return false
+	}
+	skipped := 0
+	var batch []model.Activity
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		n, err := e.Store.AddActivities(ctx, batch)
+		res.New += n
+		batch = batch[:0]
+		return err
+	}
+	fetch.Emit = func(a model.Activity) error {
+		if a.NativeID == "" || a.Time.IsZero() || a.Type == "" {
+			return fmt.Errorf("connector emitted an incomplete activity: %+v", a)
+		}
+		a.SourceID = ent.ID
+		a.ID = model.ActivityID(ent.ID, a.NativeID)
+		a.Time = a.Time.UTC()
+		if covered(a.Time) {
+			skipped++
+			return nil
+		}
+		res.Fetched++
+		batch = append(batch, a)
+		if len(batch) >= 500 {
+			return flush()
+		}
+		return nil
+	}
+	if ent.LastOK.IsZero() {
+		log.add("first sync: fetching the whole history")
+	} else {
+		log.add("fetching since %s", ent.LastOK.Format(time.RFC3339))
+	}
+	if err := src.Activities(ctx, fetch); err != nil {
+		_ = flush() // keep what was fetched; the next run dedupes
+		return err
+	}
+	if err := flush(); err != nil {
+		return err
+	}
+	log.add("%d activities fetched, %d new", res.Fetched, res.New)
+	if skipped > 0 {
+		log.add("%d activities inside an imported statement's period left to the statement", skipped)
+	}
+	return nil
+}
+
+// derivedBalances: what the history adds up to, account by account
+// (corrections left out, so none is needed).
+func (e *Engine) derivedBalances(ctx context.Context, sourceID string) ([]model.Balance, error) {
+	acts, err := e.Store.Activities(ctx, store.ActivityFilter{SourceID: sourceID})
+	if err != nil {
+		return nil, err
+	}
+	byAccount := map[string][]model.Activity{}
+	for _, a := range acts {
+		if a.Type != model.Adjustment {
+			byAccount[a.Account] = append(byAccount[a.Account], a)
+		}
+	}
+	out := []model.Balance{}
+	for acc, list := range byAccount {
+		for _, h := range model.Holdings(list) {
+			if !h.Qty.IsZero() {
+				out = append(out, model.Balance{Account: acc, Amount: h})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Account != out[j].Account {
+			return out[i].Account < out[j].Account
+		}
+		return out[i].Asset.Key() < out[j].Asset.Key()
+	})
+	return out, nil
 }
 
 // Reconcile compares a source's replayed history with its last balances.
@@ -372,6 +494,31 @@ func (e *Engine) Import(ctx context.Context, id, name string, data []byte) (*Imp
 	if err != nil {
 		return nil, err
 	}
+	res, err := e.importFile(ctx, ent, src, name, data, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer e.changed()
+	// A source whose balances come from its history gets them again.
+	if bal, err := src.Balances(ctx); errors.Is(err, source.ErrNoBalances) {
+		if bal, err = e.derivedBalances(ctx, id); err == nil {
+			_ = e.Store.PutBalancesFrom(ctx, id, e.Now(), bal, true)
+		}
+	}
+	if _, _, err := e.Adjust(ctx, ent); err != nil {
+		return nil, err
+	}
+	if res.Gaps, err = e.Reconcile(ctx, id); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// importFile makes a statement the history of its period. log is the
+// sync's when a sync downloaded it (the statement then replaces its
+// previous copy); nil for a file the user imported, which gets its own run.
+func (e *Engine) importFile(ctx context.Context, ent *store.Entity, src source.Source, name string, data []byte, log *runLog) (*ImportResult, error) {
+	id := ent.ID
 	imp, ok := src.(source.Importer)
 	if !ok {
 		return nil, ErrNoImport
@@ -387,9 +534,13 @@ func (e *Engine) Import(ctx context.Context, id, name string, data []byte) (*Imp
 	if len(st.Activities) == 0 || st.To.Before(st.From) {
 		return nil, errors.New("the file holds no activity")
 	}
+	scoped := map[string]bool{}
+	for _, a := range st.Accounts {
+		scoped[a] = true
+	}
 	replaced := 0
 	for _, a := range existing {
-		if !a.Time.Before(st.From) && !a.Time.After(st.To) {
+		if !a.Time.Before(st.From) && !a.Time.After(st.To) && (len(scoped) == 0 || scoped[a.Account]) {
 			replaced++
 		}
 	}
@@ -403,25 +554,27 @@ func (e *Engine) Import(ctx context.Context, id, name string, data []byte) (*Imp
 		a.Time = a.Time.UTC()
 		acts = append(acts, a)
 	}
-	runID, _ := e.Store.StartRun(ctx, "import", id)
-	err = e.Store.ReplacePeriod(ctx, store.Statement{SourceID: id, Name: name, From: st.From.UTC(), To: st.To.UTC()}, acts)
+	var runID int64
+	if log == nil {
+		runID, _ = e.Store.StartRun(ctx, "import", id)
+	}
+	err = e.Store.ReplacePeriod(ctx, store.Statement{SourceID: id, Name: name, From: st.From.UTC(), To: st.To.UTC(), Accounts: st.Accounts, Synced: log != nil}, acts)
 	summary := fmt.Sprintf("%s: %d activities from %s to %s (replacing %d)", name, len(acts), st.From.Format("2006-01-02"), st.To.Format("2006-01-02"), replaced)
 	if err != nil {
 		summary += "; " + err.Error()
 	}
-	_ = e.Store.EndRun(ctx, runID, err == nil, summary, strings.Join(st.Notes, "\n"))
+	if log == nil {
+		_ = e.Store.EndRun(ctx, runID, err == nil, summary, strings.Join(st.Notes, "\n"))
+	} else {
+		log.add("%s", summary)
+		for _, n := range st.Notes {
+			log.add("%s", n)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer e.changed()
-	if _, _, err := e.Adjust(ctx, ent); err != nil {
-		return nil, err
-	}
-	gaps, err := e.Reconcile(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return &ImportResult{From: st.From, To: st.To, Activities: len(acts), Replaced: replaced, Notes: st.Notes, Gaps: gaps}, nil
+	return &ImportResult{From: st.From, To: st.To, Activities: len(acts), Replaced: replaced, Notes: st.Notes}, nil
 }
 
 // Test checks a source's credentials without syncing.
@@ -577,13 +730,16 @@ func (e *Engine) push(ctx context.Context, ent *store.Entity, log *runLog) (*Pus
 				log.add("accounts: %v (costs left out)", err)
 			}
 		}
-		var cost map[string]decimal.Decimal
-		if ccy := currencies[r.Account]; ccy != "" {
-			if cost = costs[ccy]; cost == nil {
-				log.add("valuing in %s", ccy)
-				cost = e.Costs(ctx, ledger, ccy)
-				costs[ccy] = cost
+		costIn := func(account string) map[string]decimal.Decimal {
+			ccy := currencies[account]
+			if ccy == "" {
+				return nil
 			}
+			if costs[ccy] == nil {
+				log.add("valuing in %s", ccy)
+				costs[ccy] = e.Costs(ctx, ledger, ccy)
+			}
+			return costs[ccy]
 		}
 		from := map[string]string{}
 		names := map[string]string{}
@@ -603,38 +759,64 @@ func (e *Engine) push(ctx context.Context, ent *store.Entity, log *runLog) (*Pus
 			}
 			from[a.ID] = names[other.SourceID]
 		}
-		for i := 0; i < len(pending); i += 200 {
-			chunk := pending[i:min(i+200, len(pending))]
-			results, err := d.Push(ctx, dest.Batch{SourceName: src.Name, Account: r.Account, Activities: chunk, Costs: cost, Transfers: from})
-			now := e.Now()
-			var ds []store.Delivery
-			seen := map[string]bool{}
-			for _, r := range results {
-				seen[r.ActivityID] = true
-				res.Counts[r.Status]++
-				ds = append(ds, store.Delivery{DestinationID: ent.ID, ActivityID: r.ActivityID, Status: string(r.Status), ExternalID: r.ExternalID, Message: r.Message, At: now})
-				if r.Status == dest.Failed || (r.Status == dest.Skipped && r.Message != "") {
-					log.add("%s %s: %s", r.Status, r.ActivityID, r.Message)
-				}
+		// Sub-accounts (a PEA) may go to destination accounts of their own.
+		var targets []string
+		byTarget := map[string][]model.Activity{}
+		for _, a := range pending {
+			to := r.To(a.Account)
+			if byTarget[to] == nil {
+				targets = append(targets, to)
 			}
-			if err != nil {
-				// Whatever the destination did not report on is retried next time.
-				for _, a := range chunk {
-					if !seen[a.ID] {
-						res.Counts[dest.Failed]++
-						ds = append(ds, store.Delivery{DestinationID: ent.ID, ActivityID: a.ID, Status: string(dest.Failed), Message: err.Error(), At: now})
-					}
-				}
+			byTarget[to] = append(byTarget[to], a)
+		}
+		for _, to := range targets {
+			list := byTarget[to]
+			if to != r.Account {
+				log.add("%d of them to %s", len(list), to)
 			}
-			if perr := e.Store.PutDeliveries(ctx, ds); perr != nil {
-				return res, perr
-			}
-			if err != nil {
+			if err := e.deliver(ctx, d, ent, src.Name, to, list, costIn(to), from, log, res); err != nil {
 				return res, err
 			}
 		}
 	}
 	return res, nil
+}
+
+// deliver sends one source's activities to one destination account, by
+// chunks, and records the outcome of each.
+func (e *Engine) deliver(ctx context.Context, d dest.Destination, ent *store.Entity, srcName, account string, pending []model.Activity,
+	cost map[string]decimal.Decimal, from map[string]string, log *runLog, res *PushResult) error {
+	for i := 0; i < len(pending); i += 200 {
+		chunk := pending[i:min(i+200, len(pending))]
+		results, err := d.Push(ctx, dest.Batch{SourceName: srcName, Account: account, Activities: chunk, Costs: cost, Transfers: from})
+		now := e.Now()
+		var ds []store.Delivery
+		seen := map[string]bool{}
+		for _, r := range results {
+			seen[r.ActivityID] = true
+			res.Counts[r.Status]++
+			ds = append(ds, store.Delivery{DestinationID: ent.ID, ActivityID: r.ActivityID, Status: string(r.Status), ExternalID: r.ExternalID, Message: r.Message, At: now})
+			if r.Status == dest.Failed || (r.Status == dest.Skipped && r.Message != "") {
+				log.add("%s %s: %s", r.Status, r.ActivityID, r.Message)
+			}
+		}
+		if err != nil {
+			// Whatever the destination did not report on is retried next time.
+			for _, a := range chunk {
+				if !seen[a.ID] {
+					res.Counts[dest.Failed]++
+					ds = append(ds, store.Delivery{DestinationID: ent.ID, ActivityID: a.ID, Status: string(dest.Failed), Message: err.Error(), At: now})
+				}
+			}
+		}
+		if perr := e.Store.PutDeliveries(ctx, ds); perr != nil {
+			return perr
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---- schedule
@@ -673,7 +855,8 @@ func (e *Engine) due(ctx context.Context) {
 	}
 	now := e.Now()
 	for _, s := range srcs {
-		if !s.Enabled || e.Running(s.ID) {
+		// A source waiting for a sign-in is not retried: the user approves.
+		if !s.Enabled || e.Running(s.ID) || NeedsLogin(s) || e.loginPending(s.ID) {
 			continue
 		}
 		// After a failure, wait at least 15 minutes before retrying.

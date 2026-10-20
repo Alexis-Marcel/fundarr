@@ -35,6 +35,7 @@ import (
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/evm"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/kraken"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/okx"
+	_ "github.com/Alexis-Marcel/fundarr/internal/source/traderepublic"
 	_ "github.com/Alexis-Marcel/fundarr/internal/source/wallet"
 )
 

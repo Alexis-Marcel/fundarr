@@ -8,9 +8,23 @@ import { otherApp, walletApps, type WalletApp } from "../wallets";
 import { Modal } from "../components/Modal";
 import { ago, badgeKind, isZeroTime, usePoll } from "../lib";
 
+/** The source waits for a sign-in to sync. */
+export function needsSignIn(s: Source): boolean {
+  if (!s.session?.needed) return false;
+  if (s.lastError.includes("sign-in needed")) return true;
+  return !s.session.until || new Date(s.session.until).getTime() <= Date.now();
+}
+
+/** A sign-in waits for the user. */
+export function signingIn(s: Source): boolean {
+  return !!s.login && !s.login.done && !s.login.error;
+}
+
 export function health(s: Source): Health {
-  if (s.running) return "running";
+  if (s.running || signingIn(s)) return "running";
   if (!s.enabled) return "idle";
+  if (needsSignIn(s)) return "warn";
+  if (s.offline && s.activities === 0) return "idle";
   if (s.lastError) return "error";
   if (s.gaps && s.gaps.length > 0) return "warn";
   if (isZeroTime(s.lastOk)) return "idle";
@@ -19,6 +33,10 @@ export function health(s: Source): Health {
 
 export function statusText(s: Source): string {
   if (s.running) return isZeroTime(s.lastOk) ? "First sync running…" : "Syncing…";
+  if (signingIn(s)) return "Waiting for your approval";
+  if (needsSignIn(s)) return "Approve to sync";
+  if (s.offline && s.activities === 0) return "Import the CSV export";
+  if (s.offline) return "From the imported export";
   if (!s.enabled) return "Paused";
   if (s.lastError) return s.lastError;
   if (isZeroTime(s.lastOk)) return "Waiting for its first sync";
@@ -82,20 +100,30 @@ export function SourcesPage({ defs }: { defs: SourceDef[] }) {
                 </span>
                 <span className="row-stat">
                   <b>{ago(s.lastOk)}</b>
-                  <small>last sync</small>
+                  <small>{s.offline ? "updated" : "last sync"}</small>
                 </span>
               </Link>
-              <button
-                className="btn btn-small"
-                disabled={s.running}
-                onClick={async () => {
-                  await api.sync(s.id).catch(() => {});
-                  setFast(true);
-                  reload();
-                }}
-              >
-                {s.running ? "Syncing" : "Sync now"}
-              </button>
+              {s.offline ? (
+                <Link className="btn btn-small" to={`/sources/${s.id}?import=1`}>
+                  Import
+                </Link>
+              ) : s.session ? (
+                <Link className="btn btn-small" to={`/sources/${s.id}/sync`}>
+                  {s.running ? "Syncing" : "Sync now"}
+                </Link>
+              ) : (
+                <button
+                  className="btn btn-small"
+                  disabled={s.running}
+                  onClick={async () => {
+                    await api.sync(s.id).catch(() => {});
+                    setFast(true);
+                    reload();
+                  }}
+                >
+                  {s.running ? "Syncing" : "Sync now"}
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -143,9 +171,6 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
               </span>
             </button>
           ))}
-          <p className="muted small picker-note">
-            More coming: Trade Republic…
-          </p>
         </div>
       ) : (
         <EntityForm
@@ -153,16 +178,22 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
           defName={app && app.id !== "other" ? app.name : def.name}
           fields={def.fields}
           setup={def.setup}
+          modes={def.modes}
           settings={app ? { app: app.id } : undefined}
           guide={app ? <WalletGuide app={app} /> : undefined}
-          saveLabel="Save and sync"
-          onTest={async (name, values) => {
-            await api.testSource({ kind: def.kind, name, values });
-          }}
+          saveLabel={(mode) => (mode === "connect" ? "Save and connect" : def.modes?.length && def.statement ? "Save and import" : "Save and sync")}
+          onTest={
+            def.noTest
+              ? undefined
+              : async (name, values) => {
+                  await api.testSource({ kind: def.kind, name, values });
+                }
+          }
           onSave={async (name, values) => {
-            const s = await api.createSource({ kind: def.kind, name, values });
+            const s = await api.createSource({ kind: def.kind, name, values, skipTest: def.noTest });
             onAdded();
-            navigate(`/sources/${s.id}`);
+            // Next step right away: the sign-in, or the file to import.
+            navigate(s.session ? `/sources/${s.id}/sync` : s.offline && def.statement ? `/sources/${s.id}?import=1` : `/sources/${s.id}`);
           }}
         />
       )}

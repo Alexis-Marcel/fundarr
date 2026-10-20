@@ -9,6 +9,15 @@ export interface Field {
   lines?: boolean; // a list, one value per line
   advanced?: boolean; // tucked under "Advanced"
   hidden?: boolean; // set by the UI, not a field
+  mode?: string; // shown only in this mode of the source
+}
+
+/** One way of using a source (a file, a connection), picked in its form. */
+export interface Mode {
+  id: string;
+  name: string;
+  help?: string;
+  beta?: boolean;
 }
 
 /** One saved value of a list (masked), and what it is. */
@@ -43,6 +52,8 @@ export interface SourceDef {
   statement?: string; // how to export the platform's statement (import supported)
   limits?: string; // what the platform's API cannot tell
   hidden?: boolean; // kept for existing sources, not offered for new ones
+  modes?: Mode[]; // ways of using it; the "mode" setting holds the one chosen
+  noTest?: boolean; // the form has no "Test connection"
 }
 
 export interface DestDef {
@@ -92,6 +103,26 @@ export interface Source {
   secretItems?: Record<string, ListItem[]>; // secret lists, masked item by item
   corrections: number; // balance corrections in the history
   adjust: boolean; // whether Fundarr makes them
+  balancesDerived: boolean; // the balances are what the history adds up to
+  offline: boolean; // a sync reads nothing: statements only
+  session?: SignInSession; // the source signs in now and then
+  login?: Login; // a sign-in in progress or just ended
+  subAccounts?: string[]; // accounts within the platform besides the main one
+}
+
+export interface SignInSession {
+  needed: boolean;
+  until?: string; // the session ends then
+  methods?: string[]; // "app", "qr"
+}
+
+export interface Login {
+  method: string;
+  challenge?: { kind: "approve" | "code" | "qr"; digits?: number; expires: string };
+  qr?: string; // SVG to scan
+  started: string;
+  done?: boolean;
+  error?: string;
 }
 
 export interface Destination {
@@ -111,6 +142,7 @@ export interface Route {
   sourceId: string;
   account: string;
   since: string;
+  accounts?: Record<string, string>; // a sub-account → its own destination account
 }
 
 export interface DestAccount {
@@ -176,7 +208,7 @@ export interface AppSettings {
 
 export interface Run {
   id: number;
-  kind: "sync" | "push";
+  kind: "sync" | "push" | "import" | "login";
   subjectId: string;
   started: string;
   ended: string;
@@ -277,7 +309,10 @@ export const api = {
   testSource: (in_: EntityInput & { id?: string }) => call<{ ok: boolean }>("POST", "/api/sources/test", in_),
   updateSource: (id: string, in_: EntityInput) => call<Source>("PUT", `/api/sources/${id}`, in_),
   deleteSource: (id: string) => call("DELETE", `/api/sources/${id}`, {}),
-  sync: (id: string, full = false) => call("POST", `/api/sources/${id}/sync`, { full }),
+  sync: (id: string, full = false, method?: string) => call<{ started: boolean; login?: Login }>("POST", `/api/sources/${id}/sync`, { full, method }),
+  signIn: (id: string, method?: string) => call<{ login: Login }>("POST", `/api/sources/${id}/login`, { method }),
+  loginCode: (id: string, code: string) => call<{ login: Login }>("POST", `/api/sources/${id}/login/code`, { code }),
+  cancelLogin: (id: string) => call("DELETE", `/api/sources/${id}/login`, {}),
   activities: (id: string, offset: number, limit = 50) =>
     call<{ activities: Activity[]; total: number }>("GET", `/api/sources/${id}/activities?offset=${offset}&limit=${limit}`),
   statements: (id: string) => call<Statement[]>("GET", `/api/sources/${id}/statements`),

@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { api, type Activity, type Adjustment, type ImportResult, type Reclassify, type Source, type SourceDef } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { api, type Activity, type Adjustment, type ImportResult, type Login, type Reclassify, type Source, type SourceDef, type Statement } from "../api";
 import { KindBadge, StatusDot } from "../components/Badge";
 import { EntityForm } from "../components/EntityForm";
 import { WalletGuide } from "../components/WalletGuide";
@@ -8,30 +8,53 @@ import { AssetName, CryptoIcon } from "../components/CryptoIcon";
 import { walletApp } from "../wallets";
 import { Modal } from "../components/Modal";
 import { RunList } from "./Activity";
-import { ago, assetLabel, badgeKind, dateTime, day, isZeroTime, money, qty, usePoll } from "../lib";
-import { health, statusText } from "./Sources";
+import { accountName, ago, assetLabel, badgeKind, dateTime, day, isZeroTime, money, qty, until, usePoll } from "../lib";
+import { health, needsSignIn, signingIn, statusText } from "./Sources";
 
 type Tab = "check" | "activities" | "runs";
 
-export function SourceDetail({ defs }: { defs: SourceDef[] }) {
+export function SourceDetail({ defs, autoSync = false }: { defs: SourceDef[]; autoSync?: boolean }) {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const [fast, setFast] = useState(true);
   const { data: src, reload } = usePoll(
     async () => {
       const s = (await api.sources()).find((x) => x.id === id) ?? null;
-      setFast(s?.running ?? false);
+      setFast(!!s && (s.running || signingIn(s)));
       return s;
     },
-    fast ? 2500 : 20000,
+    fast ? 2000 : 20000,
     [id, fast],
   );
+  const { data: stmts } = usePoll(() => api.statements(id), 60000, [id, src?.lastRun]);
   const [tab, setTab] = useState<Tab>("check");
   const [editing, setEditing] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [importing, setImporting] = useState(() => params.get("import") === "1");
+  const [syncErr, setSyncErr] = useState<string | null>(null);
   const def = defs.find((d) => d.kind === src?.kind);
 
+  const sync = async (method?: string) => {
+    setSyncErr(null);
+    try {
+      await api.sync(id, false, method);
+    } catch (e) {
+      setSyncErr((e as Error).message);
+    }
+    setFast(true);
+    reload();
+  };
+  // /sources/:id/sync (a bookmark on the phone): sync at once, once.
+  const auto = useRef(false);
+  useEffect(() => {
+    if (!autoSync || auto.current || !id) return;
+    auto.current = true;
+    sync().finally(() => navigate(`/sources/${id}`, { replace: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSync, id]);
+
   if (!src) return <section className="page"><p className="muted">Loading…</p></section>;
+  const lastImport = stmts?.[0];
 
   return (
     <section className="page">
@@ -45,18 +68,18 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
           </p>
         </div>
         <div className="detail-actions">
-          <button
-            className="btn btn-primary"
-            disabled={src.running}
-            onClick={async () => {
-              await api.sync(src.id).catch(() => {});
-              setFast(true);
-              reload();
-            }}
-          >
-            {src.running ? "Syncing…" : "Sync now"}
-          </button>
-          {def?.statement && (
+          {src.offline ? (
+            def?.statement && (
+              <button className="btn btn-primary" disabled={src.running} onClick={() => setImporting(true)}>
+                Import statement
+              </button>
+            )
+          ) : (
+            <button className="btn btn-primary" disabled={src.running || signingIn(src)} onClick={() => sync()}>
+              {src.running ? "Syncing…" : signingIn(src) ? "Waiting…" : "Sync now"}
+            </button>
+          )}
+          {!src.offline && def?.statement && (
             <button className="btn" disabled={src.running} onClick={() => setImporting(true)}>
               Import statement
             </button>
@@ -67,17 +90,36 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
         </div>
       </header>
 
+      {syncErr && !src.login?.error && <p className="notice notice-error">{syncErr}</p>}
+      {src.session && def && <Connection src={src} def={def} onSync={sync} onChanged={reload} />}
+
       <dl className="stats">
-        <div>
-          <dt>Last sync</dt>
-          <dd title={isZeroTime(src.lastOk) ? undefined : dateTime(src.lastOk)}>{src.running ? "Running now" : ago(src.lastOk)}</dd>
-          {!isZeroTime(src.lastOk) && <small>{dateTime(src.lastOk)}</small>}
-        </div>
-        <div>
-          <dt>Next sync</dt>
-          <dd>{nextSync(src)}</dd>
-          <small>every {src.intervalMinutes >= 60 ? `${src.intervalMinutes / 60} h` : `${src.intervalMinutes} min`}</small>
-        </div>
+        {src.offline ? (
+          <div>
+            <dt>Last import</dt>
+            <dd>{lastImport ? ago(lastImport.at) : "None yet"}</dd>
+            <small>{lastImport ? `up to ${day(lastImport.to)}` : "CSV export"}</small>
+          </div>
+        ) : (
+          <div>
+            <dt>Last sync</dt>
+            <dd title={isZeroTime(src.lastOk) ? undefined : dateTime(src.lastOk)}>{src.running ? "Running now" : ago(src.lastOk)}</dd>
+            {!isZeroTime(src.lastOk) && <small>{dateTime(src.lastOk)}</small>}
+          </div>
+        )}
+        {src.offline ? (
+          <div>
+            <dt>Accounts</dt>
+            <dd>{1 + (src.subAccounts?.length ?? 0)}</dd>
+            <small className="clip">{[accountName(""), ...(src.subAccounts ?? [])].join(", ")}</small>
+          </div>
+        ) : (
+          <div>
+            <dt>Next sync</dt>
+            <dd>{nextSync(src)}</dd>
+            <small>every {src.intervalMinutes >= 60 ? `${src.intervalMinutes / 60} h` : `${src.intervalMinutes} min`}</small>
+          </div>
+        )}
         <div>
           <dt>Activities</dt>
           <dd>{src.activities.toLocaleString("en")}</dd>
@@ -86,24 +128,36 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
         <div>
           <dt>Balance check</dt>
           <dd className={src.gaps && src.gaps.length ? "status-warn" : ""}>
-            {isZeroTime(src.balancesAt)
+            {isZeroTime(src.balancesAt) || (src.offline && src.activities === 0)
               ? "Pending"
-              : src.gaps && src.gaps.length
-                ? `${src.gaps.length} to explain`
-                : src.corrections > 0
-                  ? `${src.corrections} corrected`
-                  : "All match"}
+              : src.balancesDerived
+                ? "From history"
+                : src.gaps && src.gaps.length
+                  ? `${src.gaps.length} to explain`
+                  : src.corrections > 0
+                    ? `${src.corrections} corrected`
+                    : "All match"}
           </dd>
-          <small>{isZeroTime(src.balancesAt) ? "after the first sync" : `balances ${ago(src.balancesAt)}`}</small>
+          <small>
+            {src.offline && src.activities === 0
+              ? "after the import"
+              : isZeroTime(src.balancesAt)
+              ? "after the first sync"
+              : src.balancesDerived
+                ? src.offline
+                  ? "no balances in the export"
+                  : "balances not read"
+                : `balances ${ago(src.balancesAt)}`}
+          </small>
         </div>
       </dl>
 
       <nav className="tabs" role="tablist">
         {(
           [
-            ["check", "Balance check"],
+            ["check", src.balancesDerived ? "Holdings" : "Balance check"],
             ["activities", `Activities (${src.activities.toLocaleString("en")})`],
-            ["runs", "Sync log"],
+            ["runs", src.offline ? "Log" : "Sync log"],
           ] as [Tab, string][]
         ).map(([t, label]) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "is-on" : ""} onClick={() => setTab(t)}>
@@ -114,7 +168,7 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
 
       {tab === "check" && (
         <>
-          <Statements id={src.id} key={src.lastRun} />
+          <Statements list={stmts} />
           <Check src={src} />
           <Corrections src={src} limits={def?.limits} canImport={!!def?.statement} onImport={() => setImporting(true)} onChanged={reload} />
         </>
@@ -190,8 +244,7 @@ export function SourceDetail({ defs }: { defs: SourceDef[] }) {
   );
 }
 
-function Statements({ id }: { id: string }) {
-  const { data } = usePoll(() => api.statements(id), 60000, [id]);
+function Statements({ list: data }: { list: Statement[] | null }) {
   if (!data || data.length === 0) return null;
   return (
     <ul className="statements">
@@ -277,6 +330,7 @@ function ImportStatement({ src, help, onClose, onDone }: { src: Source; help: st
 function nextSync(s: Source): string {
   if (s.running) return "After this one";
   if (!s.enabled) return "Paused";
+  if (needsSignIn(s)) return "After approval";
   if (isZeroTime(s.lastRun)) return "Within a minute";
   // A failed run is retried after 15 minutes at most.
   const wait = s.lastError ? Math.min(s.intervalMinutes, 15) : s.intervalMinutes;
@@ -334,10 +388,35 @@ function EntitySettings({ src, onChanged }: { src: Source; onChanged: () => void
 function Check({ src }: { src: Source }) {
   const { data } = usePoll(() => api.holdings(src.id), src.running ? 4000 : 30000, [src.id, src.running, src.lastOk]);
   if (!data) return <p className="muted">Loading…</p>;
+  if (src.offline && src.activities === 0) return <p className="muted">Import the CSV export to see what it holds.</p>;
   if (isZeroTime(data.balancesAt)) return <p className="muted">Balances arrive at the end of the first sync.</p>;
   if (data.holdings.length === 0)
     return <p className="muted check-intro">Nothing is held here right now, and the history agrees: every coin that came in also went out.</p>;
   const lines = [...data.holdings].sort((a, b) => Number(b.gap) - Number(a.gap) || assetLabel(a.asset).localeCompare(assetLabel(b.asset)));
+  if (src.balancesDerived)
+    return (
+      <div>
+        <p className="muted check-intro">What the history adds up to. {src.offline ? "The export has no balances to check it against." : `${src.name} gave no balances this time.`}</p>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Asset</th>
+              <th className="num">Held</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l) => (
+              <tr key={l.asset.kind + l.asset.symbol}>
+                <td>
+                  <AssetName asset={l.asset} /> {l.asset.kind !== "crypto" && <small className="muted">{l.asset.kind}</small>}
+                </td>
+                <td className="num">{qty(l.replayed)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
   return (
     <div>
       <p className="muted check-intro">
@@ -656,5 +735,165 @@ function ReclassifyModal({ src, adj, onClose, onDone }: { src: Source; adj: Adju
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** The sign-in of a source that keeps a session: its state, and the steps of a sign-in. */
+function Connection({ src, def, onSync, onChanged }: { src: Source; def: SourceDef; onSync: (method?: string) => Promise<void>; onChanged: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const login = src.login;
+  if (login && signingIn(src)) return <SignIn src={src} def={def} login={login} onSync={onSync} onChanged={onChanged} />;
+  const link = `${window.location.origin}/sources/${src.id}/sync`;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      window.prompt("Sync link", link);
+    }
+  };
+  return (
+    <div className={`connection ${login?.error ? "is-error" : ""}`}>
+      {login?.error ? (
+        <>
+          <StatusDot health="error" />
+          <span className="connection-text">
+            <strong>Sign-in failed</strong>
+            <span className="muted small">{login.error}</span>
+          </span>
+          <button className="btn btn-small" onClick={() => onSync()}>
+            Try again
+          </button>
+        </>
+      ) : login?.done ? (
+        <>
+          <StatusDot health="running" />
+          <span className="connection-text">
+            <strong>Signed in</strong>
+            <span className="muted small">Syncing…</span>
+          </span>
+        </>
+      ) : needsSignIn(src) ? (
+        <>
+          <StatusDot health="warn" />
+          <span className="connection-text">
+            <strong>Approve to sync</strong>
+            <span className="muted small">Sync asks for it in your {def.name} app.</span>
+          </span>
+        </>
+      ) : (
+        <>
+          <StatusDot health="ok" />
+          <span className="connection-text">
+            <strong>Connected until {until(src.session!.until!)}</strong>
+            <span className="muted small">Syncs need no approval until then.</span>
+          </span>
+        </>
+      )}
+      <button className="link small" onClick={copy} title="Bookmark it on your phone: one tap syncs">
+        {copied ? "Copied" : "Copy sync link"}
+      </button>
+    </div>
+  );
+}
+
+function useCountdown(expires?: string) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  if (!expires) return 0;
+  return Math.max(0, Math.round((new Date(expires).getTime() - now) / 1000));
+}
+
+function SignIn({ src, def, login, onSync, onChanged }: { src: Source; def: SourceDef; login: Login; onSync: (method?: string) => Promise<void>; onChanged: () => void }) {
+  const c = login.challenge;
+  const left = useCountdown(c?.expires);
+  const total = c ? Math.max(1, (new Date(c.expires).getTime() - new Date(login.started).getTime()) / 1000) : 1;
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const methods = src.session?.methods ?? [];
+  const send = async (v: string) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.loginCode(src.id, v);
+      onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+      setCode("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const switchTo = async (method: string) => {
+    await api.cancelLogin(src.id).catch(() => {});
+    await onSync(method);
+  };
+  const cancel = async () => {
+    await api.cancelLogin(src.id).catch(() => {});
+    onChanged();
+  };
+  const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  return (
+    <div className="signin" role="status">
+      {c?.kind === "qr" && login.qr ? (
+        <div className="signin-qr" aria-label="QR code" dangerouslySetInnerHTML={{ __html: login.qr }} />
+      ) : (
+        <svg className="signin-icon" viewBox="0 0 24 24" aria-hidden width="40" height="40">
+          <rect x="6" y="2.5" width="12" height="19" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+          <path d="M10.5 18.5h3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          <circle cx="17.5" cy="5.5" r="3" className="signin-ping" />
+        </svg>
+      )}
+      <div className="signin-main">
+        <strong>
+          {c?.kind === "code" ? "Code from your authenticator app" : c?.kind === "qr" ? `Scan with your ${def.name} app` : `Approve in your ${def.name} app`}
+        </strong>
+        {c?.kind === "code" && (
+          <input
+            className="code-input"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            pattern="[0-9]*"
+            maxLength={c.digits ?? 6}
+            autoFocus
+            disabled={busy}
+            value={code}
+            aria-label="Code"
+            onChange={(e) => {
+              const v = e.target.value.replace(/\D/g, "");
+              setCode(v);
+              if (v.length === (c.digits ?? 6)) send(v);
+            }}
+          />
+        )}
+        {err && <span className="status-error small">{err}</span>}
+        <span className="signin-time">
+          <span className="signin-bar">
+            <span style={{ width: `${Math.min(100, (left / total) * 100)}%` }} />
+          </span>
+          <span className="muted small">{mmss}</span>
+        </span>
+        <span className="signin-links">
+          {c?.kind !== "qr" && methods.includes("qr") && (
+            <button className="link small" onClick={() => switchTo("qr")}>
+              Use a QR code
+            </button>
+          )}
+          {c?.kind === "qr" && methods.includes("app") && (
+            <button className="link small" onClick={() => switchTo("app")}>
+              Use a notification
+            </button>
+          )}
+          <button className="link small" onClick={cancel}>
+            Cancel
+          </button>
+        </span>
+      </div>
+    </div>
   );
 }

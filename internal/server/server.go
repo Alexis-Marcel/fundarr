@@ -106,6 +106,10 @@ func (s *Server) routes() {
 	api("PUT /api/sources/{id}", s.updateSource)
 	api("DELETE /api/sources/{id}", s.deleteSource)
 	live("POST /api/sources/{id}/sync", s.syncSource)
+	live("POST /api/sources/{id}/login", s.startLogin)
+	api("GET /api/sources/{id}/login", s.loginState)
+	live("POST /api/sources/{id}/login/code", s.loginCode)
+	api("DELETE /api/sources/{id}/login", s.cancelLogin)
 	api("GET /api/sources/{id}/activities", s.sourceActivities)
 	api("GET /api/sources/{id}/holdings", s.sourceHoldings)
 	api("GET /api/sources/{id}/statements", s.statements)
@@ -238,6 +242,17 @@ type sourceView struct {
 	// Fundarr makes them for this source.
 	Corrections int  `json:"corrections"`
 	Adjust      bool `json:"adjust"`
+	// Derived: the balances are what the history adds up to (the platform
+	// did not say). Offline: a sync reads nothing (statements only).
+	Derived bool `json:"balancesDerived"`
+	Offline bool `json:"offline"`
+	// Session: the source signs in interactively; Login: a sign-in in
+	// progress or just ended.
+	Session *source.Session `json:"session,omitempty"`
+	Login   *loginView      `json:"login,omitempty"`
+	// SubAccounts: accounts within the platform besides the main one (a
+	// PEA), which can go to destination accounts of their own.
+	SubAccounts []string `json:"subAccounts,omitempty"`
 }
 
 func (s *Server) viewSource(ctx context.Context, e *store.Entity) sourceView {
@@ -253,7 +268,20 @@ func (s *Server) viewSource(ctx context.Context, e *store.Entity) sourceView {
 	_, v.BalancesAt, _ = s.st.Balances(ctx, e.ID)
 	if !v.BalancesAt.IsZero() {
 		v.Gaps, _ = s.eng.Reconcile(ctx, e.ID)
+		v.Derived = s.st.BalancesDerived(ctx, e.ID)
 	}
+	if src, err := s.eng.Build(e); err == nil {
+		if o, ok := src.(source.Offline); ok {
+			v.Offline = o.Offline()
+		}
+		if ia, ok := src.(source.Interactive); ok && !v.Offline {
+			if ses := ia.Session(); ses.Needed {
+				v.Session = &ses
+			}
+		}
+	}
+	v.Login = viewLogin(s.eng.LoginState(e.ID))
+	v.SubAccounts, _ = s.st.SubAccounts(ctx, e.ID)
 	if sec, err := s.eng.Secrets(e); err == nil {
 		for k, val := range sec {
 			if val != "" {
@@ -651,18 +679,31 @@ func (s *Server) deleteSource(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) syncSource(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.st.Source(r.Context(), id); err != nil {
+	ent, err := s.st.Source(r.Context(), id)
+	if err != nil {
 		writeErr(w, 404, "no such source")
+		return
+	}
+	var body struct {
+		Full   bool   `json:"full"`
+		Method string `json:"method"` // sign-in method, when one is needed
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	// No session: the sync starts with a sign-in, then runs by itself.
+	if s.eng.LoginNeeded(ent) {
+		l, err := s.eng.StartLogin(s.cfg.Background, id, body.Method)
+		if err != nil {
+			s.loginErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, map[string]any{"started": false, "login": viewLogin(l)})
 		return
 	}
 	if s.eng.Running(id) {
 		writeErr(w, 409, "a sync is already running")
 		return
 	}
-	var body struct {
-		Full bool `json:"full"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.Full {
 		go s.eng.Resync(s.cfg.Background, id)
 	} else {
@@ -750,10 +791,11 @@ func (s *Server) sourceHoldings(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, line{Asset: a, Replayed: rp.String(), Correction: rc.String(), Reported: rr.String(), Gap: gaps[k]})
 	}
-	for k, a := range reported {
+	// The history's assets first: they carry names (a security's).
+	for k, a := range replayed {
 		add(k, a.Asset)
 	}
-	for k, a := range replayed {
+	for k, a := range reported {
 		add(k, a.Asset)
 	}
 	for k, a := range corrected {
@@ -991,6 +1033,11 @@ func (s *Server) putRoute(w http.ResponseWriter, r *http.Request) {
 	if in.DestinationID == "" || in.SourceID == "" || in.Account == "" {
 		writeErr(w, 422, "destination, source and account are required")
 		return
+	}
+	for sub, acc := range in.Accounts {
+		if acc == "" || acc == in.Account {
+			delete(in.Accounts, sub)
+		}
 	}
 	if err := s.st.PutRoute(r.Context(), in); err != nil {
 		writeErr(w, 500, err.Error())

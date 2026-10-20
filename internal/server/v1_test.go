@@ -100,7 +100,7 @@ func TestDemo(t *testing.T) {
 		t.Fatal("session does not say demo")
 	}
 	var sources []map[string]string
-	if code := get("/api/v1/sources", &sources); code != 200 || len(sources) != 3 {
+	if code := get("/api/v1/sources", &sources); code != 200 || len(sources) != 4 {
 		t.Fatalf("sources %d %v", code, sources)
 	}
 	var acts struct {
@@ -118,7 +118,7 @@ func TestDemo(t *testing.T) {
 		}
 		Unpriced []any
 	}
-	if code := get("/api/v1/portfolio", &p); code != 200 || len(p.Assets) != 4 || len(p.Unpriced) != 0 || p.Total["value"] == "0.00" {
+	if code := get("/api/v1/portfolio", &p); code != 200 || len(p.Assets) != 7 || len(p.Unpriced) != 0 || p.Total["value"] == "0.00" {
 		t.Fatalf("portfolio %d %+v", code, p)
 	}
 	var h struct{ Points []map[string]string }
@@ -133,7 +133,7 @@ func TestDemo(t *testing.T) {
 		t.Fatalf("tax %d %+v", code, tax)
 	}
 	var holdings []struct{ Balances []any }
-	if code := get("/api/v1/holdings", &holdings); code != 200 || len(holdings) != 3 || len(holdings[0].Balances) == 0 {
+	if code := get("/api/v1/holdings", &holdings); code != 200 || len(holdings) != 4 || len(holdings[0].Balances) == 0 {
 		t.Fatalf("holdings %d %+v", code, holdings)
 	}
 	if code := get("/api/v1/activities.csv?format=koinly", nil); code != 200 {

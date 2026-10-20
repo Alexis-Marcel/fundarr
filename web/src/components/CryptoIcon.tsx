@@ -36,12 +36,13 @@ export function CryptoIcon({ symbol, kind, size = 22 }: { symbol?: string; kind?
   );
 }
 
-/** An asset as shown in tables: its icon, then its symbol. */
-export function AssetName({ asset, size = 18 }: { asset: { kind: string; symbol: string; isin?: string }; size?: number }) {
+/** An asset as shown in tables: its icon, then its symbol (a security's name). */
+export function AssetName({ asset, size = 18 }: { asset: { kind: string; symbol: string; isin?: string; name?: string }; size?: number }) {
+  const named = asset.kind === "security" && asset.name;
   return (
-    <span className="asset-name">
-      <CryptoIcon symbol={asset.symbol || asset.isin} size={size} />
-      <strong>{asset.symbol || asset.isin || "?"}</strong>
+    <span className="asset-name" title={named ? asset.isin || asset.symbol : undefined}>
+      <CryptoIcon symbol={named ? asset.name : asset.symbol || asset.isin} size={size} />
+      <strong className={named ? "clip" : undefined}>{named ? asset.name : asset.symbol || asset.isin || "?"}</strong>
     </span>
   );
 }

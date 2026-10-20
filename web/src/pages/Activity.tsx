@@ -31,6 +31,8 @@ export function RunList({ subject, names }: { subject: string; names?: Record<st
   );
 }
 
+const RUN_KIND: Record<string, string> = { sync: "Sync", push: "Delivery", import: "Import", login: "Sign-in" };
+
 function RunItem({ run, name, open, onToggle }: { run: Run; name?: string; open: boolean; onToggle: () => void }) {
   const { data } = usePoll(async () => (open ? (await api.runs(run.subjectId, 200, true)).find((x) => x.id === run.id) ?? null : null), open && run.ok === null ? 2000 : 600000, [open]);
   const h = run.ok === null ? "running" : run.ok ? "ok" : "error";
@@ -38,7 +40,7 @@ function RunItem({ run, name, open, onToggle }: { run: Run; name?: string; open:
     <li className={`run ${open ? "is-open" : ""}`}>
       <button className="run-head" onClick={onToggle} aria-expanded={open}>
         <StatusDot health={h} />
-        <span className="run-kind">{run.kind === "sync" ? "Sync" : "Delivery"}</span>
+        <span className="run-kind">{RUN_KIND[run.kind] ?? run.kind}</span>
         {name && <span className="run-name">{name}</span>}
         <span className="run-summary clip">{run.ok === null ? "Running…" : run.summary}</span>
         <time className="muted small" dateTime={run.started} title={dateTime(run.started)}>

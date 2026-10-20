@@ -28,6 +28,7 @@ A source implements:
 - `Balances(ctx)`: what the platform says is held now.
 - `State()`: optional cursors, given back next run in `cfg.State`.
 - `Test(ctx)` (optional, recommended): check the credentials, and **refuse keys that can trade or withdraw** when the API tells you.
+- `source.Interactive` (optional): for a platform where the user approves a sign-in now and then (see `internal/source/traderepublic`). The engine keeps the connector while the sign-in waits and the session in the sealed state (`SealState`); return `source.ErrLogin` when it ends. Never retry a refused sign-in.
 
 Rules that keep the data trustworthy:
 

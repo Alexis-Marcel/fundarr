@@ -1,7 +1,9 @@
-// Package demo makes up a crypto portfolio for FUNDARR_DEMO=1, so apps can
-// be built on the read API without real accounts: three sources (Binance,
-// Kraken, a Ledger) from 2023 to today, with monthly buys, staking, moves
-// to the Ledger, a swap to USDC and sales for euros.
+// Package demo makes up a portfolio for FUNDARR_DEMO=1, so apps can be
+// built on the read API without real accounts: three crypto sources
+// (Binance, Kraken, a Ledger) from 2023 to today, with monthly buys,
+// staking, moves to the Ledger, a swap to USDC and sales for euros; and a
+// Trade Republic account (its CSV export imported) with ETF savings plans
+// on a compte-titres and a PEA, and a stock paying dividends.
 //
 // Only the activities and balances are made up; the engine and the
 // portfolio code compute everything else, as for real data. Prices are a
@@ -33,6 +35,14 @@ var (
 	Binance = &store.Entity{ID: "9b687b4899f5", Kind: "binance", Name: "Binance"}
 	Kraken  = &store.Entity{ID: "4d2e8a1c7b30", Kind: "kraken", Name: "Kraken"}
 	Ledger  = &store.Entity{ID: "0130c2d4e6f8", Kind: "wallet", Name: "Ledger", Settings: map[string]string{"app": "ledger"}}
+	TR      = &store.Entity{ID: "7e1a5c3b9d02", Kind: "traderepublic", Name: "Trade Republic", Settings: map[string]string{"mode": "csv"}}
+)
+
+// Securities of the Trade Republic account, by ISIN.
+var (
+	world  = model.Asset{Kind: model.Security, Symbol: "IE00B4L5Y983", ISIN: "IE00B4L5Y983", Name: "iShares Core MSCI World"}
+	peaETF = model.Asset{Kind: model.Security, Symbol: "LU1681043599", ISIN: "LU1681043599", Name: "Amundi MSCI World (PEA)"}
+	total  = model.Asset{Kind: model.Security, Symbol: "FR0000120271", ISIN: "FR0000120271", Name: "TotalEnergies"}
 )
 
 // ---- prices
@@ -66,20 +76,25 @@ var walks = map[string]walk{
 		{"2031-12-31", 250}}},
 	"USD": {0.002, []waypoint{{"2023-01-01", 0.94}, {"2024-01-01", 0.91}, {"2025-01-01", 0.96}, {"2025-07-01", 0.86}, {"2026-10-20", 0.88},
 		{"2031-12-31", 0.9}}},
+	// Securities, in EUR, by ISIN.
+	"IE00B4L5Y983": {0.008, []waypoint{{"2023-01-01", 72}, {"2024-01-01", 82}, {"2025-02-15", 105}, {"2025-04-08", 88}, {"2026-10-20", 118},
+		{"2031-12-31", 150}}},
+	"LU1681043599": {0.008, []waypoint{{"2023-01-01", 380}, {"2024-01-01", 430}, {"2025-02-15", 550}, {"2025-04-08", 460}, {"2026-10-20", 610},
+		{"2031-12-31", 780}}},
+	"FR0000120271": {0.012, []waypoint{{"2023-01-01", 58}, {"2023-09-15", 62}, {"2024-04-15", 68}, {"2025-01-01", 54}, {"2026-10-20", 57},
+		{"2031-12-31", 60}}},
 }
+
+// walkOrder seeds each walk: the first ones as they always were.
+var walkOrder = []string{"BTC", "ETH", "SOL", "USD", "IE00B4L5Y983", "LU1681043599", "FR0000120271"}
 
 func dayIndex(t time.Time) int { return int(t.UTC().Truncate(day).Sub(first) / day) }
 
 // series: the close of each walk on each day from first to last.
 var series = sync.OnceValue(func() map[string][]decimal.Decimal {
 	n := dayIndex(last) + 1
-	syms := make([]string, 0, len(walks))
-	for s := range walks {
-		syms = append(syms, s)
-	}
-	sort.Strings(syms)
 	out := map[string][]decimal.Decimal{}
-	for i, sym := range syms {
+	for i, sym := range walkOrder {
 		w := walks[sym]
 		rng := rand.New(rand.NewPCG(42, uint64(i)))
 		noise := make([]float64, n)
@@ -122,12 +137,16 @@ func Price(sym string, t time.Time) (decimal.Decimal, bool) {
 }
 
 // Market answers for the price providers (price.Service.Market): Binance's
-// SYMEUR and SYMUSDT markets, and the USD/EUR rates. Nothing else is
-// listed, so other currencies and coins have no price.
+// SYMEUR and SYMUSDT markets, justETF's quotes in EUR, and the USD/EUR
+// rates. Nothing else is listed, so other currencies and coins have no
+// price.
 func Market(pair string, from, to time.Time) map[string]decimal.Decimal {
 	provider, market, _ := strings.Cut(pair, ":")
 	var at func(t time.Time) (decimal.Decimal, bool)
 	switch {
+	case provider == "justetf" && strings.HasSuffix(market, ":EUR"):
+		isin := strings.TrimSuffix(market, ":EUR")
+		at = func(t time.Time) (decimal.Decimal, bool) { return Price(isin, t) }
 	case provider == "fx" && market == "USDEUR":
 		at = func(t time.Time) (decimal.Decimal, bool) { return Price("USD", t) }
 	case provider == "fx" && market == "EURUSD":
@@ -169,10 +188,22 @@ func Market(pair string, from, to time.Time) map[string]decimal.Decimal {
 // ---- activities
 
 type sim struct {
-	day  time.Time
-	acts []model.Activity
-	held map[string]map[string]decimal.Decimal // source → symbol → qty
-	seq  int
+	day    time.Time
+	acts   []model.Activity
+	held   map[string]map[string]decimal.Decimal // source → symbol → qty
+	trHeld map[string]decimal.Decimal            // Trade Republic: asset key → qty
+	seq    int
+}
+
+// trCashHeld: the euros of a Trade Republic account.
+func (s *sim) trCashHeld(account string) decimal.Decimal {
+	var mine []model.Activity
+	for _, a := range s.acts {
+		if a.SourceID == TR.ID && a.Account == account {
+			mine = append(mine, a)
+		}
+	}
+	return model.Holdings(mine)[eur.Key()].Qty
 }
 
 var eur = model.CryptoOrFiat("EUR")
@@ -197,8 +228,11 @@ func (s *sim) add(src *store.Entity, hour, minute int, a model.Activity) model.A
 	a.NativeID = fmt.Sprintf("demo-%s-%d", s.day.Format("20060102"), s.seq)
 	a.ID = model.ActivityID(src.ID, a.NativeID)
 	a.Time = s.day.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
-	for _, h := range model.Holdings([]model.Activity{a}) {
+	for k, h := range model.Holdings([]model.Activity{a}) {
 		s.held[src.ID][h.Asset.Symbol] = s.held[src.ID][h.Asset.Symbol].Add(h.Qty)
+		if src == TR {
+			s.trHeld[k] = s.trHeld[k].Add(h.Qty)
+		}
 	}
 	s.acts = append(s.acts, a)
 	return a
@@ -273,10 +307,41 @@ func (s *sim) stake(src *store.Entity, sym, rate, note string) {
 	}
 }
 
+// trBuy spends euros on a security, at the day's price, in an account.
+func (s *sim) trBuy(account string, a model.Asset, euros int64, fee string) {
+	spent := decimal.NewFromInt(euros)
+	p, _ := Price(a.ISIN, s.day)
+	q := spent.Div(p).RoundDown(6)
+	act := model.Activity{Type: model.Trade, Side: model.Buy, Account: account, Base: model.Amount{Asset: a, Qty: q}, Quote: ptr(model.Amount{Asset: eur, Qty: q.Mul(p).Round(2)}),
+		Note: "Savings plan execution"}
+	if fee != "" {
+		act.Fee, act.Note = ptr(model.Amount{Asset: eur, Qty: dec(fee)}), ""
+	}
+	s.add(TR, 9, 30, act)
+}
+
+// trCash moves euros in or out of a Trade Republic account.
+func (s *sim) trCash(account string, typ model.Type, euros decimal.Decimal, note string) {
+	if euros.IsPositive() {
+		s.add(TR, 7, 15, model.Activity{Type: typ, Account: account, Base: model.Amount{Asset: eur, Qty: euros}, Note: note})
+	}
+}
+
+// trDividend pays TotalEnergies' quarterly dividend, its tax apart.
+func (s *sim) trDividend() {
+	q := s.trHeld[total.Key()]
+	gross := q.Mul(dec("0.79")).Round(2)
+	if !gross.IsPositive() {
+		return
+	}
+	s.add(TR, 6, 0, model.Activity{Type: model.Dividend, Base: model.Amount{Asset: eur, Qty: gross}, Quote: &model.Amount{Asset: total}})
+	s.add(TR, 6, 0, model.Activity{Type: model.Tax, Base: model.Amount{Asset: eur, Qty: gross.Mul(dec("0.128")).Round(2)}, Note: "Tax"})
+}
+
 // Activities makes up the history from early 2023 to now's day.
 func Activities(now time.Time) []model.Activity {
-	s := &sim{held: map[string]map[string]decimal.Decimal{}}
-	for _, src := range []*store.Entity{Binance, Kraken, Ledger} {
+	s := &sim{held: map[string]map[string]decimal.Decimal{}, trHeld: map[string]decimal.Decimal{}}
+	for _, src := range []*store.Entity{Binance, Kraken, Ledger, TR} {
 		s.held[src.ID] = map[string]decimal.Decimal{}
 	}
 	end := now.UTC().Truncate(day)
@@ -309,6 +374,26 @@ func Activities(now time.Time) []model.Activity {
 			s.withdrawBank(Binance)
 			s.withdrawBank(Kraken)
 		}
+		if ym >= 202401 { // Trade Republic: savings plans on the CTO and the PEA
+			switch d {
+			case 1:
+				s.trCash("", model.Interest, s.trCashHeld("").Mul(dec("0.0022")).Round(2), "Interest payment")
+			case 2:
+				s.trCash("", model.Deposit, decimal.NewFromInt(250), "Incoming transfer")
+				s.trCash("PEA", model.Deposit, decimal.NewFromInt(300), "Incoming transfer")
+			case 3:
+				s.trBuy("", world, 150, "")
+				s.trBuy("PEA", peaETF, 300, "")
+			case 15:
+				if m%3 == 1 {
+					s.trBuy("", total, 200, "1")
+				}
+			case 28:
+				if m%3 == 0 {
+					s.trDividend()
+				}
+			}
+		}
 		switch s.day.Format(time.DateOnly) {
 		case "2023-03-19":
 			s.bank(Binance, 1500)
@@ -340,10 +425,11 @@ func Activities(now time.Time) []model.Activity {
 }
 
 // Seed fills an empty store with the sources, their history and their
-// balances, as if each had just synced at now.
+// balances, as if each had just synced at now. Trade Republic's history is
+// an imported export: its balances are what it adds up to.
 func Seed(ctx context.Context, st *store.Store, now time.Time) error {
 	acts := Activities(now)
-	for _, src := range []*store.Entity{Binance, Kraken, Ledger} {
+	for _, src := range []*store.Entity{Binance, Kraken, Ledger, TR} {
 		e := *src
 		e.Enabled, e.Created = true, first
 		if e.Settings == nil {
@@ -358,17 +444,33 @@ func Seed(ctx context.Context, st *store.Store, now time.Time) error {
 				mine = append(mine, a)
 			}
 		}
-		if _, err := st.AddActivities(ctx, mine); err != nil {
+		if src == TR {
+			stmt := store.Statement{SourceID: e.ID, Name: "Transaction export.csv", From: mine[0].Time, To: mine[len(mine)-1].Time, Accounts: []string{"", "PEA"}}
+			if err := st.ReplacePeriod(ctx, stmt, mine); err != nil {
+				return err
+			}
+		} else if _, err := st.AddActivities(ctx, mine); err != nil {
 			return err
 		}
+		byAccount := map[string][]model.Activity{}
+		for _, a := range mine {
+			byAccount[a.Account] = append(byAccount[a.Account], a)
+		}
 		bal := []model.Balance{}
-		for _, h := range model.Holdings(mine) {
-			if h.Qty.IsPositive() {
-				bal = append(bal, model.Balance{Amount: h})
+		for acc, list := range byAccount {
+			for _, h := range model.Holdings(list) {
+				if h.Qty.IsPositive() {
+					bal = append(bal, model.Balance{Account: acc, Amount: h})
+				}
 			}
 		}
-		sort.Slice(bal, func(i, j int) bool { return bal[i].Asset.Symbol < bal[j].Asset.Symbol })
-		if err := st.PutBalances(ctx, e.ID, now, bal); err != nil {
+		sort.Slice(bal, func(i, j int) bool {
+			if bal[i].Account != bal[j].Account {
+				return bal[i].Account < bal[j].Account
+			}
+			return bal[i].Asset.Key() < bal[j].Asset.Key()
+		})
+		if err := st.PutBalancesFrom(ctx, e.ID, now, bal, src == TR); err != nil {
 			return err
 		}
 		if err := st.SourceRan(ctx, e.ID, now, nil, nil); err != nil {

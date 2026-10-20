@@ -4,6 +4,7 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,6 +31,21 @@ type Field struct {
 	// Hidden: set by the UI itself (a choice made before the form), never
 	// shown as a field.
 	Hidden bool `json:"hidden,omitempty"`
+	// Mode: shown only when the source is used this way (see
+	// Definition.Modes); empty for every mode.
+	Mode string `json:"mode,omitempty"`
+}
+
+// ModeField holds which of a definition's Modes a source uses.
+const ModeField = "mode"
+
+// Mode is one way of using a source, picked in its form (stored in the
+// ModeField setting; the first mode when unset).
+type Mode struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Help string `json:"help,omitempty"`
+	Beta bool   `json:"beta,omitempty"`
 }
 
 // Definition describes a kind of source.
@@ -57,6 +73,15 @@ type Definition struct {
 	// Hidden: kept for sources already set up, not offered for new ones
 	// (another kind covers it).
 	Hidden bool `json:"hidden,omitempty"`
+	// NoTest: the form has no "Test connection" (checking would need the
+	// user, like a sign-in to approve).
+	NoTest bool `json:"noTest,omitempty"`
+	// Modes, when set, are the ways the source can be used (a statement
+	// file, a connection...); fields with a Mode belong to one of them.
+	Modes []Mode `json:"modes,omitempty"`
+	// SealState: the connector's state holds a secret (a session), so the
+	// engine stores it encrypted.
+	SealState bool `json:"-"`
 	// New builds a connector from its settings (secrets decrypted).
 	New func(cfg Config) (Source, error) `json:"-"`
 }
@@ -98,6 +123,9 @@ func NewHTTP() *http.Client {
 type Config struct {
 	Values map[string]string
 	HTTP   *http.Client
+	// Log, when set, records what the connector does outside a sync (a
+	// sign-in), for the run log. Never secrets.
+	Log func(format string, args ...any)
 	// State is what the connector saved after its last run (cursors, ids
 	// already seen...). Opaque to the engine.
 	State []byte
@@ -139,7 +167,10 @@ type Importer interface {
 
 // Statement is what an import produced.
 type Statement struct {
-	From, To   time.Time        // period covered (inclusive)
+	From, To time.Time // period covered (inclusive)
+	// Accounts: the sub-accounts the file covers (nil: all of them);
+	// activities of other sub-accounts in the period stay.
+	Accounts   []string
 	Activities []model.Activity // the whole history of that period
 	Notes      []string         // what the user should know (lines skipped...)
 }
@@ -147,6 +178,67 @@ type Statement struct {
 // Tester can be implemented to check credentials when a source is saved.
 type Tester interface {
 	Test(ctx context.Context) error
+}
+
+// Offline is implemented by connectors that may read nothing from the
+// platform (statements only): Offline reports whether this one does.
+type Offline interface {
+	Offline() bool
+}
+
+// ErrNoBalances, from Balances, means the platform did not say what is
+// held: the engine derives the balances from the history and says so.
+var ErrNoBalances = errors.New("balances unknown")
+
+// StatementFetcher is implemented by connectors whose sync downloads the
+// platform's own statement (the file Importer reads): the engine imports it
+// as if the user had, instead of calling Activities.
+type StatementFetcher interface {
+	FetchStatement(ctx context.Context, f Fetch) (name string, data []byte, err error)
+}
+
+// ---- interactive sign-in
+
+// ErrLogin means the connector must be signed in again by the user (a
+// session expired): syncs stop until then, nothing is retried.
+var ErrLogin = errors.New("sign-in needed")
+
+// Session is what an interactive connector says of its sign-in, without
+// asking the platform.
+type Session struct {
+	// Needed: the source signs in interactively (a session it keeps).
+	Needed bool `json:"needed"`
+	// Until: when the current session ends (zero: none).
+	Until time.Time `json:"until,omitempty"`
+	// Methods: how a sign-in can be started ("app", "qr").
+	Methods []string `json:"methods,omitempty"`
+}
+
+// Valid reports whether the session can be used at now.
+func (s Session) Valid(now time.Time) bool { return !s.Needed || s.Until.After(now) }
+
+// Challenge is what the user has to do for a sign-in to go on.
+type Challenge struct {
+	// Kind: "approve" (in the platform's app), "code" (type the code its
+	// app or SMS shows), "qr" (scan Data with the platform's app).
+	Kind    string    `json:"kind"`
+	Data    string    `json:"data,omitempty"`
+	Digits  int       `json:"digits,omitempty"`
+	Expires time.Time `json:"expires"`
+}
+
+// Interactive is implemented by connectors that need the user to sign in
+// now and then. The engine keeps the connector between calls while a
+// sign-in is in progress; the session it ends with is part of State. A
+// connector never retries a refused sign-in by itself.
+type Interactive interface {
+	Session() Session
+	// Login starts a sign-in with one of Session().Methods.
+	Login(ctx context.Context, method string) (*Challenge, error)
+	// Poll checks on it: a nil challenge means signed in.
+	Poll(ctx context.Context) (*Challenge, error)
+	// Answer sends the code a "code" challenge asks for.
+	Answer(ctx context.Context, code string) (*Challenge, error)
 }
 
 var (

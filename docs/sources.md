@@ -24,6 +24,23 @@ The whole history, with a CDP key that has the View permission only: buys, sells
 
 The whole history, with a read-only key (Balances, Transaction) on the new Public API: crypto, stocks and ETFs (by ISIN), metals, savings plans, staking and BEST rewards, dividends.
 
+## Trade Republic
+
+Compte-titres, PEA and crypto, each account apart (the PEA can go to its own app account). Two ways, picked in the form:
+
+**CSV export.** In the app: Profile → Statements → Transaction export → the whole period. Import the file on the source. A newer export later replaces the period it covers; nothing is duplicated.
+
+**Connect (beta).** Fundarr signs in to Trade Republic's web API like its website does: phone number and PIN (stored encrypted), or a QR code. Tap **Sync now**: the Trade Republic app asks you to approve, then Fundarr downloads the same export and reads the balances. The session lasts 24 hours; syncs in that time need nothing from you, then the source waits for the next approval and is not retried. **Copy sync link** gives an address (`/sources/{id}/sync`) to keep on your phone's home screen: one tap syncs. Trade Republic does not offer this API and its terms likely forbid using it: use it knowingly. A refused PIN is never tried again until you change it.
+
+If the web app version Trade Republic expects changes, set it under Advanced (or `FUNDARR_TR_APP_VERSION`). Every sign-in and sync step is in the source's log, without secrets.
+
+Limits:
+
+- Dates are booking dates, not execution times; crypto has no transaction hash.
+- In CSV mode, balances are what the history adds up to: there is nothing to check them against.
+- A split adds shares at no cost; a reverse split, a spin-off or a merger whose other side is missing are approximations (rewards, or a sale for nothing). A dividend Trade Republic books again cancels its first booking when both are in the export; otherwise the reversal is a withdrawal.
+- Stocks and ETFs are priced from justETF by ISIN (Yahoo Finance as a fallback); a security neither knows is valued at its last trade.
+
 ## Wallet
 
 A hardware wallet (Ledger, Trezor…) or a wallet app (MetaMask, Phantom, Trust Wallet, Exodus…), every account in one source. Pick the app for a step-by-step guide, then paste each key or address: Fundarr recognizes its blockchain and shows what the account holds before you save. Fundarr never needs a recovery phrase.
@@ -41,4 +58,4 @@ With an extended public key, every address type in use is read. A send between t
 
 ## Adding a source
 
-A source is one Go package that registers itself: see [CONTRIBUTING.md](../CONTRIBUTING.md). Next on the list: Trade Republic, via [pytr](https://github.com/pytr-org/pytr).
+A source is one Go package that registers itself: see [CONTRIBUTING.md](../CONTRIBUTING.md).

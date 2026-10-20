@@ -8,7 +8,7 @@ Fundarr already did the hard part: every exchange and wallet read, the history c
 docker run --rm -e FUNDARR_DEMO=1 -p 9494:9494 ghcr.io/alexis-marcel/fundarr
 ```
 
-`FUNDARR_DEMO=1` serves a made-up crypto portfolio: Binance, Kraken and a Ledger from 2023 to today, with monthly buys, staking rewards, moves to the Ledger, a swap to USDC and a few sales. The engine computes everything from it as it would from real accounts, with fixed made-up prices (no network). It lives in memory: nothing is read from or written to `/data`, nothing syncs, and any token is accepted, `fdr_demo` for instance.
+`FUNDARR_DEMO=1` serves a made-up portfolio: Binance, Kraken and a Ledger from 2023 to today, with monthly buys, staking rewards, moves to the Ledger, a swap to USDC and a few sales, plus a Trade Republic account with ETF savings plans on a compte-titres and a PEA. The engine computes everything from it as it would from real accounts, with fixed made-up prices (no network). It lives in memory: nothing is read from or written to `/data`, nothing syncs, and any token is accepted, `fdr_demo` for instance.
 
 Open http://localhost:9494 to see the same data in Fundarr.
 

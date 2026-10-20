@@ -149,6 +149,9 @@ CREATE TABLE IF NOT EXISTS feed (
 var columns = []struct{ table, column, def string }{
 	{"api_tokens", "notify_url", "TEXT NOT NULL DEFAULT ''"},
 	{"api_tokens", "notify_secret", "BLOB"},
+	{"balances", "derived", "INTEGER NOT NULL DEFAULT 0"},
+	{"statements", "accounts", "TEXT NOT NULL DEFAULT ''"},
+	{"routes", "accounts", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {
@@ -305,6 +308,13 @@ func (s *Store) SourceRan(ctx context.Context, id string, at time.Time, runErr e
 	return err
 }
 
+// PutSourceState replaces a source's state outside a sync (after a
+// sign-in, or when a sync ended because the session had expired).
+func (s *Store) PutSourceState(ctx context.Context, id string, state []byte) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sources SET state = ? WHERE id = ?`, state, id)
+	return err
+}
+
 func (s *Store) PutDestination(ctx context.Context, e *Entity) error {
 	settings, _ := json.Marshal(e.Settings)
 	if e.Created.IsZero() {
@@ -372,13 +382,30 @@ type Route struct {
 	SourceID      string    `json:"sourceId"`
 	Account       string    `json:"account"`
 	Since         time.Time `json:"since"` // only deliver activities from this date (zero: all)
+	// Accounts sends a sub-account of the source (a PEA beside a
+	// compte-titres) to another destination account; the others go to
+	// Account.
+	Accounts map[string]string `json:"accounts,omitempty"`
+}
+
+// To is the destination account an activity of sub-account sub goes to.
+func (r Route) To(sub string) string {
+	if a := r.Accounts[sub]; a != "" {
+		return a
+	}
+	return r.Account
 }
 
 func (s *Store) PutRoute(ctx context.Context, r Route) error {
+	accounts := ""
+	if len(r.Accounts) > 0 {
+		b, _ := json.Marshal(r.Accounts)
+		accounts = string(b)
+	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO routes (destination_id, source_id, account, since) VALUES (?, ?, ?, ?)
-ON CONFLICT(destination_id, source_id) DO UPDATE SET account=excluded.account, since=excluded.since`,
-		r.DestinationID, r.SourceID, r.Account, ms0(r.Since))
+INSERT INTO routes (destination_id, source_id, account, since, accounts) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(destination_id, source_id) DO UPDATE SET account=excluded.account, since=excluded.since, accounts=excluded.accounts`,
+		r.DestinationID, r.SourceID, r.Account, ms0(r.Since), accounts)
 	return err
 }
 
@@ -395,7 +422,7 @@ func (s *Store) DeleteRoute(ctx context.Context, destID, srcID string) error {
 }
 
 func (s *Store) Routes(ctx context.Context) ([]Route, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT destination_id, source_id, account, since FROM routes ORDER BY destination_id, source_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT destination_id, source_id, account, since, accounts FROM routes ORDER BY destination_id, source_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -404,8 +431,12 @@ func (s *Store) Routes(ctx context.Context) ([]Route, error) {
 	for rows.Next() {
 		var r Route
 		var since int64
-		if err := rows.Scan(&r.DestinationID, &r.SourceID, &r.Account, &since); err != nil {
+		var accounts string
+		if err := rows.Scan(&r.DestinationID, &r.SourceID, &r.Account, &since, &accounts); err != nil {
 			return nil, err
+		}
+		if accounts != "" {
+			_ = json.Unmarshal([]byte(accounts), &r.Accounts)
 		}
 		if since > 0 {
 			r.Since = time.UnixMilli(since).UTC()
@@ -694,6 +725,26 @@ ON CONFLICT(pair, day) DO UPDATE SET price=excluded.price`, pair, d, p); err != 
 	return tx.Commit()
 }
 
+// SubAccounts lists the sub-accounts a source's history uses, besides
+// the main one ("").
+func (s *Store) SubAccounts(ctx context.Context, sourceID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT json_extract(data, '$.account') FROM activities
+WHERE source_id = ? AND COALESCE(json_extract(data, '$.account'), '') != '' ORDER BY 1`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) CountActivities(ctx context.Context, sourceID string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM activities WHERE source_id = ?`, sourceID).Scan(&n)
@@ -701,12 +752,18 @@ func (s *Store) CountActivities(ctx context.Context, sourceID string) (int, erro
 }
 
 func (s *Store) PutBalances(ctx context.Context, sourceID string, at time.Time, b []model.Balance) error {
+	return s.PutBalancesFrom(ctx, sourceID, at, b, false)
+}
+
+// PutBalancesFrom records balances; derived: the platform did not say,
+// they are what the history adds up to.
+func (s *Store) PutBalancesFrom(ctx context.Context, sourceID string, at time.Time, b []model.Balance, derived bool) error {
 	data, err := json.Marshal(b)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO balances (source_id, data, at) VALUES (?, ?, ?)
-ON CONFLICT(source_id) DO UPDATE SET data=excluded.data, at=excluded.at`, sourceID, string(data), ms(at))
+	_, err = s.db.ExecContext(ctx, `INSERT INTO balances (source_id, data, at, derived) VALUES (?, ?, ?, ?)
+ON CONFLICT(source_id) DO UPDATE SET data=excluded.data, at=excluded.at, derived=excluded.derived`, sourceID, string(data), ms(at), derived)
 	return err
 }
 
@@ -725,6 +782,14 @@ func (s *Store) Balances(ctx context.Context, sourceID string) ([]model.Balance,
 	return b, time.UnixMilli(at).UTC(), err
 }
 
+// BalancesDerived reports whether a source's balances come from its
+// history rather than the platform.
+func (s *Store) BalancesDerived(ctx context.Context, sourceID string) bool {
+	var d bool
+	_ = s.db.QueryRowContext(ctx, `SELECT derived FROM balances WHERE source_id = ?`, sourceID).Scan(&d)
+	return d
+}
+
 // ---- statements
 
 // Statement is an imported platform statement: the reference for its period.
@@ -736,18 +801,60 @@ type Statement struct {
 	To         time.Time `json:"to"`
 	Activities int       `json:"activities"`
 	At         time.Time `json:"at"`
+	// Accounts: the sub-accounts it covers (nil: all).
+	Accounts []string `json:"accounts,omitempty"`
+	// Synced: downloaded by a sync, which replaces its previous copy
+	// (same name) instead of adding a statement.
+	Synced bool `json:"synced,omitempty"`
 }
 
-// ReplacePeriod swaps a source's history between from and to (inclusive)
-// for acts, and records the statement, in one transaction.
+// ReplacePeriod swaps a source's history between from and to (inclusive),
+// in the statement's accounts, for acts, and records the statement, in one
+// transaction. Activities that are in both keep their deliveries.
 func (s *Store) ReplacePeriod(ctx context.Context, st Statement, acts []model.Activity) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM activities WHERE source_id = ? AND time BETWEEN ? AND ?`, st.SourceID, ms(st.From), ms(st.To)); err != nil {
+	keep := map[string]bool{}
+	for _, a := range acts {
+		keep[a.ID] = true
+	}
+	scoped := map[string]bool{}
+	for _, a := range st.Accounts {
+		scoped[a] = true
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, data FROM activities WHERE source_id = ? AND time BETWEEN ? AND ?`, st.SourceID, ms(st.From), ms(st.To))
+	if err != nil {
 		return err
+	}
+	var drop []string
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		if keep[id] {
+			continue
+		}
+		if len(scoped) > 0 {
+			var a struct {
+				Account string `json:"account"`
+			}
+			_ = json.Unmarshal([]byte(data), &a)
+			if !scoped[a.Account] {
+				continue
+			}
+		}
+		drop = append(drop, id)
+	}
+	rows.Close()
+	for _, id := range drop {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM activities WHERE id = ?`, id); err != nil {
+			return err
+		}
 	}
 	now := ms(time.Now())
 	for _, a := range acts {
@@ -756,19 +863,33 @@ func (s *Store) ReplacePeriod(ctx context.Context, st Statement, acts []model.Ac
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO activities (id, source_id, native_id, time, type, data, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, a.ID, a.SourceID, a.NativeID, ms(a.Time), string(a.Type), string(data), now); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET time=excluded.time, type=excluded.type, data=excluded.data`,
+			a.ID, a.SourceID, a.NativeID, ms(a.Time), string(a.Type), string(data), now); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO statements (source_id, name, from_ms, to_ms, activities, at) VALUES (?, ?, ?, ?, ?, ?)`,
-		st.SourceID, st.Name, ms(st.From), ms(st.To), len(acts), now); err != nil {
+	if st.Synced {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM statements WHERE source_id = ? AND name = ?`, st.SourceID, st.Name); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO statements (source_id, name, from_ms, to_ms, activities, at, accounts) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		st.SourceID, st.Name, ms(st.From), ms(st.To), len(acts), now, accountsJSON(st.Accounts)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
+func accountsJSON(a []string) string {
+	if a == nil {
+		return ""
+	}
+	b, _ := json.Marshal(a)
+	return string(b)
+}
+
 func (s *Store) Statements(ctx context.Context, sourceID string) ([]Statement, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, name, from_ms, to_ms, activities, at FROM statements WHERE source_id = ? ORDER BY id DESC`, sourceID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, name, from_ms, to_ms, activities, at, accounts FROM statements WHERE source_id = ? ORDER BY id DESC`, sourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -777,10 +898,14 @@ func (s *Store) Statements(ctx context.Context, sourceID string) ([]Statement, e
 	for rows.Next() {
 		var st Statement
 		var from, to, at int64
-		if err := rows.Scan(&st.ID, &st.SourceID, &st.Name, &from, &to, &st.Activities, &at); err != nil {
+		var accounts string
+		if err := rows.Scan(&st.ID, &st.SourceID, &st.Name, &from, &to, &st.Activities, &at, &accounts); err != nil {
 			return nil, err
 		}
 		st.From, st.To, st.At = time.UnixMilli(from).UTC(), time.UnixMilli(to).UTC(), time.UnixMilli(at).UTC()
+		if accounts != "" {
+			_ = json.Unmarshal([]byte(accounts), &st.Accounts)
+		}
 		out = append(out, st)
 	}
 	return out, rows.Err()

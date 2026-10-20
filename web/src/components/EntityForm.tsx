@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import type { Field, ListItem } from "../api";
+import type { Field, ListItem, Mode } from "../api";
 import { AccountList } from "./AccountList";
 
 interface Props {
@@ -19,8 +19,11 @@ interface Props {
   /** Checks the values against the service without saving. */
   onTest?: (name: string, values: Record<string, string>) => Promise<void>;
   onSave: (name: string, values: Record<string, string>) => Promise<void>;
-  saveLabel: string;
+  /** The save button, by mode when the source has modes. */
+  saveLabel: string | ((mode: string) => string);
   extra?: React.ReactNode;
+  /** Ways of using the source: a switch above the fields (the "mode" setting). */
+  modes?: Mode[];
 }
 
 /** The settings form of a source or destination, built from its fields. */
@@ -30,6 +33,10 @@ export function EntityForm(p: Props) {
   const [busy, setBusy] = useState<"" | "test" | "save">("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const saved = new Set(p.secretsSet ?? []);
+  const mode = p.modes?.length ? (values.mode || p.modes[0].id) : "";
+  const current = p.modes?.find((m) => m.id === mode);
+  const inMode = (f: Field) => !f.hidden && (!f.mode || f.mode === mode);
+  const saveLabel = typeof p.saveLabel === "function" ? p.saveLabel(mode) : p.saveLabel;
 
   const run = async (kind: "test" | "save") => {
     setBusy(kind);
@@ -95,16 +102,36 @@ export function EntityForm(p: Props) {
         run("save");
       }}
     >
+      {p.modes && p.modes.length > 1 && (
+        <div className="modes">
+          <div className="segmented" role="radiogroup" aria-label="How to sync">
+            {p.modes.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="radio"
+                aria-checked={m.id === mode}
+                className={m.id === mode ? "is-on" : ""}
+                onClick={() => setValues((v) => ({ ...v, mode: m.id }))}
+              >
+                {m.name}
+                {m.beta && <span className="beta">beta</span>}
+              </button>
+            ))}
+          </div>
+          {current?.help && <p className="muted small">{current.help}</p>}
+        </div>
+      )}
       {p.setup && <p className="setup">{p.setup}</p>}
       <label className="field">
         <span>Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
       </label>
-      {p.fields.filter((f) => !f.advanced && !f.hidden).map(field)}
-      {p.fields.some((f) => f.advanced && !f.hidden) && (
+      {p.fields.filter((f) => !f.advanced && inMode(f)).map(field)}
+      {p.fields.some((f) => f.advanced && inMode(f)) && (
         <details className="advanced">
           <summary>Advanced</summary>
-          {p.fields.filter((f) => f.advanced && !f.hidden).map(field)}
+          {p.fields.filter((f) => f.advanced && inMode(f)).map(field)}
         </details>
       )}
       {p.extra}
@@ -120,7 +147,7 @@ export function EntityForm(p: Props) {
           </button>
         )}
         <button className="btn btn-primary" disabled={busy !== ""}>
-          {busy === "save" ? "Saving…" : p.saveLabel}
+          {busy === "save" ? "Saving…" : saveLabel}
         </button>
       </div>
     </form>

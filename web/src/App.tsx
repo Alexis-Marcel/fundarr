@@ -198,6 +198,7 @@ function Shell({ session }: { session: Session }) {
             <Route path="/" element={<Navigate to="/sources" replace />} />
             <Route path="/sources" element={<SourcesPage defs={defs.sources} />} />
             <Route path="/sources/:id" element={<SourceDetail defs={defs.sources} />} />
+            <Route path="/sources/:id/sync" element={<SourceDetail defs={defs.sources} autoSync />} />
             <Route path="/apps" element={<AppsPage defs={defs.destinations} session={session} />} />
             <Route path="/destinations" element={<Navigate to="/apps" replace />} />
             <Route path="/transfers" element={<TransfersPage />} />
