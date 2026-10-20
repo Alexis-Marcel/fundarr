@@ -22,8 +22,9 @@ import (
 // orders placed from the simple Buy/Sell screens never show up in myTrades,
 // and token migrations (MATIC → POL, LUNA → LUNC) have no endpoint.
 
-const statementHelp = "Binance → Wallet (or Orders) → Transaction History → Export → choose the whole period → Generate. " +
-	"Download the CSV (any language) and import it here. It becomes the history for the period it covers; " +
+const statementHelp = "Binance → Wallet (or Orders) → Transaction History → Export → choose a period → Generate. " +
+	"Binance limits each export to a few months: make one per period, from your first deposit to today, and import them one by one. " +
+	"Download each CSV (any language) and import it here. It becomes the history for the period it covers; " +
 	"the API keeps the history up to date after it. Activities the API knows better (deposits with their " +
 	"transaction hash, card purchases with their amount in euros, converts) are kept from the API."
 

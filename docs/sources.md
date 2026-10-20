@@ -6,7 +6,7 @@ Every source uses read-only access. When a connector can tell that a key also al
 
 History since 2017, with a read-only API key: spot trades, converts, Auto-Invest, card and bank purchases, Simple Earn rewards, ETH and SOL staking, distributions, dust conversions, Binance Pay (18 months), P2P (6 months).
 
-Binance's API returns spot trades from about the last two years only, and none on delisted pairs, and Binance has no API for its transaction history export. Fundarr corrects the balances for what is missing; importing the export once (**Import statement** on the source) replaces the corrections with the real trades.
+Binance's API returns spot trades from about the last two years only, and none on delisted pairs, and Binance has no API for its transaction history export. Fundarr corrects the balances for what is missing; importing the export (**Import statement** on the source) replaces the corrections with the real trades. Binance limits each export to a few months: export each period from your first deposit to today and import the files one by one, in any order; each becomes the history for the dates it covers, and re-importing a period replaces it without duplicates.
 
 ## OKX
 
