@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api, type Session } from "../api";
-import { ago, isZeroTime, usePoll } from "../lib";
+import { Link } from "react-router-dom";
+import { usePoll } from "../lib";
 
 const MODE: Record<Session["mode"], string> = {
   password: "Username and password",
@@ -97,25 +98,11 @@ function Valuation() {
   );
 }
 
-/** Downloads, and tokens for programs that read Fundarr (the /api/v1 routes). */
+/** The whole history as a file; apps read the same through /api/v1. */
 function ExportCard() {
-  const { data, reload } = usePoll(() => api.tokens(), 600000);
-  const [name, setName] = useState("");
-  const [made, setMade] = useState<string | null>(null);
-  const create = async (e: FormEvent) => {
-    e.preventDefault();
-    try {
-      const r = await api.createToken(name);
-      setMade(r.token);
-      setName("");
-      reload();
-    } catch (err) {
-      window.alert((err as Error).message);
-    }
-  };
   return (
     <div className="card settings-card">
-      <h2>Export and API</h2>
+      <h2>Export</h2>
       <div className="form-actions start">
         <a className="btn" href="/api/v1/activities.csv?format=fundarr" download>
           Download CSV
@@ -125,39 +112,8 @@ function ExportCard() {
         </a>
       </div>
       <p className="muted small">
-        Other apps read <code>/api/v1/activities</code> with a token: <code>Authorization: Bearer …</code>
+        Every activity of every source. Apps can read them too: see <Link to="/apps">Apps</Link>.
       </p>
-      {made && (
-        <p className="notice notice-ok">
-          Copy it now, it won&apos;t show again: <code className="select">{made}</code>
-        </p>
-      )}
-      {data && data.length > 0 && (
-        <ul className="token-list">
-          {data.map((t) => (
-            <li key={t.id}>
-              <strong>{t.name}</strong>
-              <span className="muted small">{isZeroTime(t.lastUsed) ? "never used" : `used ${ago(t.lastUsed)}`}</span>
-              <button
-                className="link small"
-                onClick={async () => {
-                  if (!window.confirm(`Revoke "${t.name}"?`)) return;
-                  await api.deleteToken(t.id);
-                  reload();
-                }}
-              >
-                Revoke
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <form className="account-add" onSubmit={create}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Token name (what will use it)" maxLength={60} />
-        <button className="btn" disabled={!name.trim()}>
-          New token
-        </button>
-      </form>
     </div>
   );
 }

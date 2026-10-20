@@ -2,9 +2,9 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { api, type DestDef, type Session, type SourceDef } from "./api";
 import { ActivityPage } from "./pages/Activity";
+import { AppsPage } from "./pages/Apps";
 import { SettingsPage } from "./pages/Settings";
 import { TransfersPage } from "./pages/Transfers";
-import { DestinationsPage } from "./pages/Destinations";
 import { SourceDetail } from "./pages/SourceDetail";
 import { SourcesPage } from "./pages/Sources";
 
@@ -166,7 +166,7 @@ function Shell({ session }: { session: Session }) {
         <Wordmark />
         <nav>
           <NavLink to="/sources">Sources</NavLink>
-          <NavLink to="/destinations">Destinations</NavLink>
+          <NavLink to="/apps">Apps</NavLink>
           <NavLink to="/transfers">Transfers</NavLink>
           <NavLink to="/activity">Activity log</NavLink>
           <NavLink to="/settings">Settings</NavLink>
@@ -188,12 +188,18 @@ function Shell({ session }: { session: Session }) {
         </div>
       </aside>
       <main className="main">
+        {session.demo && (
+          <p className="demo-banner">
+            <strong>Demo data</strong> Made up, nothing syncs.
+          </p>
+        )}
         {defs && (
           <Routes>
             <Route path="/" element={<Navigate to="/sources" replace />} />
             <Route path="/sources" element={<SourcesPage defs={defs.sources} />} />
             <Route path="/sources/:id" element={<SourceDetail defs={defs.sources} />} />
-            <Route path="/destinations" element={<DestinationsPage defs={defs.destinations} />} />
+            <Route path="/apps" element={<AppsPage defs={defs.destinations} session={session} />} />
+            <Route path="/destinations" element={<Navigate to="/apps" replace />} />
             <Route path="/transfers" element={<TransfersPage />} />
             <Route path="/activity" element={<ActivityPage names={names} />} />
             <Route path="/settings" element={<SettingsPage session={session} />} />

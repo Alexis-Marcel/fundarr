@@ -859,6 +859,46 @@ input[type="date"] {
 .picker-note {
   grid-column: 1 / -1;
 }
+.pick small.as-is {
+  text-transform: none;
+}
+
+/* ---- apps: what a read app needs, to copy */
+
+.copy-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.copy-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+  padding: 0.5rem 0.65rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+.copy-value.is-code {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.demo-banner {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.45rem 2.5rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: rgb(217 164 65 / 0.1);
+  border-bottom: 1px solid rgb(217 164 65 / 0.35);
+}
+.demo-banner strong {
+  color: var(--brass-hi);
+}
 
 /* ---- small screens */
 
@@ -899,6 +939,9 @@ input[type="date"] {
   }
   .page {
     padding: 1.25rem 1rem 3rem;
+  }
+  .demo-banner {
+    padding: 0.45rem 1rem;
   }
   .page-head,
   .detail-head,
@@ -1093,25 +1136,6 @@ input[type="date"] {
   gap: 0.45rem;
 }
 
-.token-list {
-  list-style: none;
-  margin: 0.75rem 0;
-  padding: 0;
-  display: grid;
-  gap: 0.4rem;
-}
-.token-list li {
-  display: flex;
-  gap: 0.75rem;
-  align-items: baseline;
-}
-.token-list li button {
-  margin-left: auto;
-}
-code.select {
-  user-select: all;
-  word-break: break-all;
-}
 .form-actions.start {
   justify-content: flex-start;
 }
