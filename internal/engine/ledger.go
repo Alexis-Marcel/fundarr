@@ -282,3 +282,18 @@ func (e *Engine) Costs(ctx context.Context, l *Ledger, ccy string) map[string]de
 	}
 	return model.Costs(l.Acts, l.In, value)
 }
+
+// UnitPrice prices one unit of an asset on the day of at, in ccy. Without a
+// price service, only ccy itself is known.
+func (e *Engine) UnitPrice(ctx context.Context, ccy string) func(model.Asset, time.Time) (decimal.Decimal, bool) {
+	return func(a model.Asset, at time.Time) (decimal.Decimal, bool) {
+		if a.Kind == model.Fiat && a.Symbol == ccy {
+			return decimal.NewFromInt(1), true
+		}
+		if e.Prices == nil {
+			return decimal.Zero, false
+		}
+		p, err := e.Prices.Price(ctx, a, at, ccy)
+		return p, err == nil
+	}
+}

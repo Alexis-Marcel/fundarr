@@ -42,7 +42,7 @@ func init() {
 			{Name: "solana_rpc", Label: "Solana RPC", Secret: true, Optional: true, Advanced: true,
 				Help: "A private RPC reads Solana faster."},
 		},
-		Setup: "Read-only: Fundarr never needs your recovery phrase.",
+		Setup:   "Read-only: Fundarr never needs your recovery phrase.",
 		New:     New,
 		Detect:  Detect,
 		Preview: Preview,
