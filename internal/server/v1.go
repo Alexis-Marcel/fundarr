@@ -166,7 +166,7 @@ func (s *Server) v1Holdings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// ---- portfolio (crypto across sources) and French tax
+// ---- portfolio (crypto and securities across sources) and French tax
 
 // priceWait bounds the time spent asking providers for prices a page has
 // not seen yet; what is still unknown after it counts as unpriced.
@@ -189,7 +189,7 @@ func assets(list []model.Asset) []model.Asset {
 	return list
 }
 
-// GET /api/v1/portfolio: the crypto held now, across sources.
+// GET /api/v1/portfolio: the crypto and securities held now, across sources.
 func (s *Server) v1Portfolio(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	l, err := s.eng.Ledger(ctx)
@@ -202,7 +202,7 @@ func (s *Server) v1Portfolio(w http.ResponseWriter, r *http.Request) {
 	pctx, cancel := context.WithTimeout(ctx, priceWait)
 	defer cancel()
 	at := s.eng.Now().UTC()
-	p := portfolio.Now(l.Acts, l.In, s.eng.UnitPrice(pctx, ccy), at)
+	p := portfolio.Now(l.Acts, l.In, portfolio.WithTrades(l.Acts, s.eng.UnitPrice(pctx, ccy), ccy), at)
 
 	type heldIn struct {
 		ID   string `json:"id"`
@@ -293,7 +293,7 @@ func (s *Server) v1History(w http.ResponseWriter, r *http.Request) {
 	}
 	pctx, cancel := context.WithTimeout(ctx, priceWait)
 	defer cancel()
-	points, unpriced := portfolio.History(l.Acts, l.In, s.eng.UnitPrice(pctx, ccy), days)
+	points, unpriced := portfolio.History(l.Acts, l.In, portfolio.WithTrades(l.Acts, s.eng.UnitPrice(pctx, ccy), ccy), days)
 	type point struct {
 		Date     string `json:"date"`
 		Value    string `json:"value"`

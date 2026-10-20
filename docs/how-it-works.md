@@ -17,7 +17,7 @@
 
 **Transfers.** A withdrawal on one source and the deposit it became on another (Binance to your Ledger) are paired, by transaction hash or by amount and time. Apps then see coins moving at their purchase cost, not a sale and a new purchase.
 
-**Prices.** Daily prices from Binance and OKX public market data, exchange rates from the European Central Bank (via Frankfurter): no account or key. They value corrections, rewards and airdrops, so they reach apps with a cost.
+**Prices.** Daily prices from Binance and OKX public market data for crypto, from justETF for stocks and ETFs by ISIN (Yahoo Finance as a fallback), exchange rates from the European Central Bank (via Frankfurter): no account or key. They value corrections, rewards and airdrops, so they reach apps with a cost.
 
 **Delivery.** Trackers such as Wealthfolio receive new activities after every sync. Each delivery is recorded, so nothing is sent twice and failures are retried. Other apps read Fundarr through the [read API](api.md) whenever they want.
 

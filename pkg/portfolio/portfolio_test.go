@@ -297,3 +297,50 @@ func TestLargeHistory(t *testing.T) {
 		t.Error("no disposals")
 	}
 }
+
+// Securities count like crypto in the portfolio (not in the 2086); one
+// without a market price is valued at its last trade.
+func TestSecurities(t *testing.T) {
+	etf := model.Asset{Kind: model.Security, Symbol: "IE00B4L5Y983", ISIN: "IE00B4L5Y983"}
+	priv := model.Asset{Kind: model.Security, Symbol: "LU3170240538", ISIN: "LU3170240538"}
+	sec := func(a model.Asset, q string) *model.Amount { x := model.Amt(a, q); return &x }
+	acts := []model.Activity{
+		act("b1", "tr", "2024-01-10", model.Trade, model.Buy, sec(etf, "10"), amt("EUR", "800"), amt("EUR", "1")),
+		act("s1", "tr", "2024-04-10", model.Trade, model.Sell, sec(etf, "4"), amt("EUR", "400"), nil),
+		act("split", "tr", "2024-05-01", model.Trade, model.Buy, sec(etf, "6"), amt("EUR", "0"), nil),
+		act("p1", "tr", "2024-05-02", model.Trade, model.Buy, sec(priv, "100"), amt("EUR", "100"), nil),
+		act("btc", "x", "2024-01-10", model.Trade, model.Buy, amt("BTC", "0.01"), amt("EUR", "200"), nil),
+	}
+	price := func(a model.Asset, at time.Time) (decimal.Decimal, bool) {
+		if a.Key() == etf.Key() {
+			return decimal.NewFromInt(50), true // after the split
+		}
+		return fake(a, at)
+	}
+	s := Now(acts, nil, WithTrades(acts, price, "EUR"), date("2025-06-02"))
+	// 12 ETF × 50 + 100 private × 1 (its buy) + 0.01 BTC × 60000.
+	if !s.Value.Equal(decimal.NewFromInt(1300)) || len(s.Unpriced) != 0 {
+		t.Fatalf("value %s, unpriced %v", s.Value, s.Unpriced)
+	}
+	// Invested: 801 + 100 + 200 − 400.
+	if !s.Invested.Equal(decimal.NewFromInt(701)) {
+		t.Fatalf("invested %s", s.Invested)
+	}
+	// Sold 4 of 10 bought for 800: cost 320, the buy's fee apart; the
+	// split costs nothing.
+	if !s.Realized.Equal(decimal.NewFromInt(79)) {
+		t.Fatalf("realized %s", s.Realized)
+	}
+	for _, h := range s.Assets {
+		if h.Asset.Key() == etf.Key() && (!h.Qty.Equal(decimal.NewFromInt(12)) || !h.Cost.Equal(decimal.NewFromInt(480))) {
+			t.Fatalf("ETF %+v", h)
+		}
+	}
+	if First(acts) != date("2024-01-10") {
+		t.Fatalf("first %s", First(acts))
+	}
+	// The 2086 leaves securities out.
+	if tax := TaxFR(acts, nil, price, 2024, false); len(tax.Disposals) != 0 {
+		t.Fatalf("2086 %+v", tax.Disposals)
+	}
+}

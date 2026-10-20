@@ -110,11 +110,11 @@ Fundarr-Signature: t=1729425600,v1=5d2c…
 
 What each source reported holding at its last sync.
 
-## Portfolio (crypto)
+## Portfolio
 
-Values are in the currency of Settings → Valuation (`currency` in every answer). Only crypto counts (stablecoins included); fiat and securities are left out. An asset with no known price is listed in `unpriced` and counted at 0 (left out of `assets`).
+Values are in the currency of Settings → Valuation (`currency` in every answer). Crypto (stablecoins included) and securities (stocks, ETFs) count; fiat is left out. A security with no market price is valued at its last trade in the history. An asset with no known price is listed in `unpriced` and counted at 0 (left out of `assets`).
 
-**Invested** is the money that came in from outside the crypto portfolio: fiat spent buying crypto, minus fiat received selling it, plus crypto deposited from outside (and balance corrections that add coins) at its value that day, minus crypto sent outside (and corrections that remove coins) at its value that day. Moves between your own sources are not invested. Rewards are gains, not invested.
+**Invested** is the money that came in from outside the portfolio: fiat spent buying crypto or securities, minus fiat received selling them, plus what was deposited from outside (and balance corrections that add coins) at its value that day, minus what was sent outside (and corrections that remove coins) at its value that day. Moves between your own sources are not invested. Rewards are gains, not invested.
 
 ### `GET /api/v1/portfolio`
 
@@ -165,7 +165,7 @@ One point per step (end of day UTC), `from` and `to` as `YYYY-MM-DD` (default: f
 }
 ```
 
-`value`: what the crypto held that day was worth at that day's close. `invested`: cumulative, as defined above.
+`value`: what was held that day was worth at that day's close. `invested`: cumulative, as defined above.
 
 ### `GET /api/v1/tax/fr?year=2025&rewards=income`
 

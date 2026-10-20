@@ -1,7 +1,8 @@
-// Package portfolio values the crypto held across every source: what it is
-// worth, what went into it and what it gained, now and day by day, and the
-// French tax on its disposals (formulaire 2086). Fiat and securities are
-// left out; stablecoins count as crypto. See docs/api.md.
+// Package portfolio values the crypto and securities held across every
+// source: what they are worth, what went into them and what they gained,
+// now and day by day, and the French tax on crypto disposals (formulaire
+// 2086, crypto only). Fiat is left out; stablecoins count as crypto. See
+// docs/api.md.
 //
 // Every function takes the whole history, and the transfers between your
 // own sources as a deposit's id → its withdrawal's id: an app gets both
@@ -56,6 +57,9 @@ func (p Price) valuer() model.Valuer { return p.value }
 
 func crypto(a model.Asset) bool { return a.Kind == model.Crypto }
 
+// invested: what the portfolio holds, crypto and securities (stocks, ETFs).
+func invested(a model.Asset) bool { return a.Kind == model.Crypto || a.Kind == model.Security }
+
 // legs returns what a trade brought in and what it gave.
 func legs(a model.Activity) (in, given model.Amount) {
 	if a.Side == model.Sell {
@@ -66,9 +70,10 @@ func legs(a model.Activity) (in, given model.Amount) {
 
 func isTrade(a model.Activity) bool { return a.Type == model.Trade && a.Quote != nil }
 
-// walker replays the history in order and keeps the crypto each source
-// holds and the money invested so far.
+// walker replays the history in order and keeps what each source holds
+// (of the assets keep says) and the money invested so far.
 type walker struct {
+	keep     func(model.Asset) bool
 	price    Price
 	in, out  map[string]string // deposit → withdrawal, withdrawal → deposit
 	held     map[string]map[string]decimal.Decimal
@@ -77,8 +82,8 @@ type walker struct {
 	unpriced map[string]model.Asset
 }
 
-func newWalker(price Price, in map[string]string) *walker {
-	w := &walker{price: price, in: in, out: map[string]string{}, held: map[string]map[string]decimal.Decimal{},
+func newWalker(price Price, in map[string]string, keep func(model.Asset) bool) *walker {
+	w := &walker{keep: keep, price: price, in: in, out: map[string]string{}, held: map[string]map[string]decimal.Decimal{},
 		assets: map[string]model.Asset{}, unpriced: map[string]model.Asset{}}
 	for i, o := range in {
 		w.out[o] = i
@@ -87,7 +92,7 @@ func newWalker(price Price, in map[string]string) *walker {
 }
 
 func (w *walker) move(src string, a model.Amount, sign int64) {
-	if !crypto(a.Asset) || a.Qty.IsZero() {
+	if !w.keep(a.Asset) || a.Qty.IsZero() {
 		return
 	}
 	k := a.Asset.Key()
@@ -122,15 +127,15 @@ func (w *walker) apply(a model.Activity) {
 	switch {
 	case isTrade(a):
 		in, given := legs(a)
-		if !crypto(in.Asset) && !crypto(given.Asset) {
+		if !w.keep(in.Asset) && !w.keep(given.Asset) {
 			break
 		}
 		w.move(a.SourceID, in, 1)
 		w.move(a.SourceID, given, -1)
 		switch {
-		case given.Asset.Kind == model.Fiat && crypto(in.Asset):
+		case given.Asset.Kind == model.Fiat && w.keep(in.Asset):
 			w.invested = w.invested.Add(w.worth(given, a.Time))
-		case crypto(given.Asset) && in.Asset.Kind == model.Fiat:
+		case w.keep(given.Asset) && in.Asset.Kind == model.Fiat:
 			w.invested = w.invested.Sub(w.worth(in, a.Time))
 		}
 		if a.Fee != nil && a.Fee.Asset.Kind == model.Fiat {
@@ -138,12 +143,12 @@ func (w *walker) apply(a model.Activity) {
 		}
 	case a.Inflow():
 		w.move(a.SourceID, a.Base, 1)
-		if crypto(a.Base.Asset) && w.external(a) {
+		if w.keep(a.Base.Asset) && w.external(a) {
 			w.invested = w.invested.Add(w.worth(a.Base, a.Time))
 		}
 	case a.Outflow():
 		w.move(a.SourceID, a.Base, -1)
-		if crypto(a.Base.Asset) && w.external(a) {
+		if w.keep(a.Base.Asset) && w.external(a) {
 			w.invested = w.invested.Sub(w.worth(a.Base, a.Time))
 		}
 	}
@@ -212,7 +217,7 @@ type Worth struct {
 func Now(acts []model.Activity, in map[string]string, price Price, at time.Time) Summary {
 	price = Cached(price)
 	acts = past(acts, at)
-	w := newWalker(price, in)
+	w := newWalker(price, in, invested)
 	for _, a := range model.ReplayOrder(acts, in) {
 		w.apply(a)
 	}
@@ -292,29 +297,29 @@ func past(acts []model.Activity, at time.Time) []model.Activity {
 // coin carries the cost over), and rewards at their day's value.
 func gains(acts []model.Activity, book *model.Book, w *walker) (realized, rewards decimal.Decimal) {
 	for _, a := range acts {
-		feeCounts := a.Fee != nil && crypto(a.Fee.Asset)
+		feeCounts := a.Fee != nil && w.keep(a.Fee.Asset)
 		switch {
 		case isTrade(a):
 			got, given := legs(a)
-			if !crypto(got.Asset) && !crypto(given.Asset) {
+			if !w.keep(got.Asset) && !w.keep(given.Asset) {
 				continue
 			}
 			feeCounts = a.Fee != nil
-			if crypto(given.Asset) && model.CashLike(got.Asset) {
+			if w.keep(given.Asset) && model.CashLike(got.Asset) {
 				net := got
 				if a.Fee != nil && a.Fee.Asset.Key() == got.Asset.Key() {
 					net.Qty = net.Qty.Sub(a.Fee.Qty)
 				}
 				realized = realized.Add(w.worth(net, a.Time)).Sub(book.Taken[a.ID])
 			}
-		case a.Outflow() && crypto(a.Base.Asset):
+		case a.Outflow() && w.keep(a.Base.Asset):
 			switch {
 			case a.Type == model.Fee || a.Type == model.Tax:
 				realized = realized.Sub(book.Taken[a.ID])
 			case w.external(a):
 				realized = realized.Add(w.worth(a.Base, a.Time)).Sub(book.Taken[a.ID])
 			}
-		case a.Inflow() && crypto(a.Base.Asset) && a.Type != model.Deposit && a.Type != model.Adjustment:
+		case a.Inflow() && w.keep(a.Base.Asset) && a.Type != model.Deposit && a.Type != model.Adjustment:
 			rewards = rewards.Add(w.worth(a.Base, a.Time))
 		}
 		if feeCounts {
@@ -360,11 +365,12 @@ func Days(from, to time.Time, step string) []time.Time {
 	return out
 }
 
-// First is the day of the first activity that touches crypto (zero if none).
+// First is the day of the first activity that touches crypto or a
+// security (zero if none).
 func First(acts []model.Activity) time.Time {
 	var first time.Time
 	for _, a := range acts {
-		touches := crypto(a.Base.Asset) || a.Quote != nil && crypto(a.Quote.Asset)
+		touches := invested(a.Base.Asset) || a.Quote != nil && invested(a.Quote.Asset)
 		if touches && (first.IsZero() || a.Time.Before(first)) {
 			first = a.Time
 		}
@@ -375,7 +381,7 @@ func First(acts []model.Activity) time.Time {
 // History values what was held at the close of each of days (in order),
 // with the money invested until then.
 func History(acts []model.Activity, in map[string]string, price Price, days []time.Time) ([]Point, []model.Asset) {
-	w := newWalker(Cached(price), in)
+	w := newWalker(Cached(price), in, invested)
 	order := model.ReplayOrder(acts, in)
 	out := make([]Point, 0, len(days))
 	i := 0
@@ -387,4 +393,37 @@ func History(acts []model.Activity, in map[string]string, price Price, days []ti
 		out = append(out, Point{Day: d, Value: w.value(d), Invested: w.invested})
 	}
 	return out, w.unpricedList()
+}
+
+// WithTrades falls back, for a security price does not know (unlisted,
+// private markets, a provider down), on its last trade in ccy before at in
+// the history: an estimate better than nothing.
+func WithTrades(acts []model.Activity, price Price, ccy string) Price {
+	type tp struct {
+		at time.Time
+		p  decimal.Decimal
+	}
+	trades := map[string][]tp{}
+	for _, a := range acts {
+		if a.Type != model.Trade || a.Quote == nil || a.Base.Asset.Kind != model.Security || a.Quote.Asset.Kind != model.Fiat ||
+			a.Quote.Asset.Symbol != ccy || !a.Base.Qty.IsPositive() || !a.Quote.Qty.IsPositive() {
+			continue
+		}
+		k := a.Base.Asset.Key()
+		trades[k] = append(trades[k], tp{a.Time, a.Quote.Qty.Div(a.Base.Qty)})
+	}
+	for _, l := range trades {
+		sort.Slice(l, func(i, j int) bool { return l[i].at.Before(l[j].at) })
+	}
+	return func(a model.Asset, at time.Time) (decimal.Decimal, bool) {
+		if p, ok := price(a, at); ok || a.Kind != model.Security {
+			return p, ok
+		}
+		l := trades[a.Key()]
+		i := sort.Search(len(l), func(i int) bool { return l[i].at.After(at.Add(day)) })
+		if i == 0 {
+			return decimal.Zero, false
+		}
+		return l[i-1].p, true
+	}
 }
