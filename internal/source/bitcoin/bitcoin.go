@@ -6,9 +6,11 @@ package bitcoin
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -98,6 +100,8 @@ type Wallet struct {
 	types []scriptType
 	c     *client
 	st    state
+	// custom: the server is one the user chose, checked by Test.
+	custom bool
 
 	scanned *scan // filled by the first scan of a run
 	now     func() time.Time
@@ -144,7 +148,7 @@ func NewCoin(coin Coin, cfg source.Config) (source.Source, error) {
 	if hc == nil {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
-	b := &Wallet{coin: coin, addr: addr, key: key, types: types, now: time.Now,
+	b := &Wallet{coin: coin, addr: addr, key: key, types: types, now: time.Now, custom: base != "",
 		c: &client{base: first.url, blockbook: first.blockbook, fallback: fallback, http: hc, pause: 60 * time.Millisecond, sleep: sleepCtx}}
 	b.c.skipDown()
 	if len(cfg.State) > 0 {
@@ -161,8 +165,14 @@ func (b *Wallet) State() []byte {
 	return raw
 }
 
-// Test checks the key and that the Esplora API answers.
+// Test checks the key and that the Esplora API answers; a server the user
+// chose must also be an Esplora of the coin's main network.
 func (b *Wallet) Test(ctx context.Context) error {
+	if b.custom {
+		if err := b.checkServer(ctx); err != nil {
+			return err
+		}
+	}
 	addr := b.addr
 	if b.key != nil {
 		var err error
@@ -172,6 +182,45 @@ func (b *Wallet) Test(ctx context.Context) error {
 	}
 	_, err := b.c.address(ctx, addr)
 	return err
+}
+
+// checkServer asks a server the user chose for the hash of block 0, once:
+// a typo, a page that is not an Esplora or a testnet instance would
+// otherwise read as an empty wallet.
+func (b *Wallet) checkServer(ctx context.Context) error {
+	if b.coin.Genesis == "" {
+		return nil
+	}
+	base := b.c.base
+	rctx, cancel := context.WithTimeout(ctx, reqTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, base+"/block-height/0", nil)
+	if err != nil {
+		return fmt.Errorf("%s server: %w", b.coin.Name, err)
+	}
+	resp, err := b.c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("cannot reach the %s server %s: %w", b.coin.Name, base, err)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	resp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("cannot reach the %s server %s: %w", b.coin.Name, base, err)
+	}
+	hash := strings.ToLower(strings.TrimSpace(string(body)))
+	if raw, err := hex.DecodeString(hash); resp.StatusCode != http.StatusOK || err != nil || len(raw) != 32 {
+		return fmt.Errorf("%s does not answer like an Esplora API (HTTP %d): check the address, it usually ends in /api", base, resp.StatusCode)
+	}
+	if hash != b.coin.Genesis {
+		if net, ok := testNetworks[hash]; ok {
+			return fmt.Errorf("wrong network: %s serves %s, not %s", base, net, b.coin.Name)
+		}
+		return fmt.Errorf("wrong network: %s does not serve %s", base, b.coin.Name)
+	}
+	return nil
 }
 
 // ---- scanning

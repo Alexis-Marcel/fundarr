@@ -34,7 +34,9 @@ func init() {
 			{Name: "accounts", Label: "Accounts", Secret: true, Lines: true,
 				Help: "Bitcoin and similar: the account's public key (xpub…) or address.\nOther coins: the receive address."},
 			{Name: "esplora_url", Label: "Bitcoin server", Optional: true, Advanced: true,
-				Help: "Your own mempool or electrs."},
+				Help: "Your own mempool or electrs: its Esplora API, usually ending in /api."},
+			{Name: "litecoin_esplora_url", Label: "Litecoin server", Optional: true, Advanced: true,
+				Help: "Your own Litecoin mempool or electrs: one server indexes one chain."},
 			{Name: "blockscout_key", Label: "Blockscout API key", Secret: true, Optional: true, Advanced: true,
 				Help: "Free at dev.blockscout.com. Adds Arbitrum, Base, Polygon, Gnosis."},
 			{Name: "etherscan_key", Label: "Etherscan API key", Secret: true, Optional: true, Advanced: true,
@@ -84,21 +86,22 @@ func keyPrefix(ps ...string) func(string) bool {
 	}
 }
 
-func utxo(c bitcoin.Coin, esplora bool) func(string, source.Config) (source.Source, error) {
-	return func(line string, cfg source.Config) (source.Source, error) {
-		v := map[string]string{"xpub": line}
-		if esplora {
-			v["esplora_url"] = cfg.Get("esplora_url")
-		}
-		return bitcoin.NewCoin(c, source.Config{Values: v, HTTP: cfg.HTTP, State: cfg.State})
-	}
+// utxo builds an account read from its extended public key; server names
+// the field holding the user's own Esplora for that coin, if it can have one.
+func utxo(c bitcoin.Coin, server string) func(string, source.Config) (source.Source, error) {
+	return utxoBy("xpub", c, server)
 }
 
-func utxoAddress(c bitcoin.Coin, esplora bool) func(string, source.Config) (source.Source, error) {
+// utxoAddress builds an account read from its only address.
+func utxoAddress(c bitcoin.Coin, server string) func(string, source.Config) (source.Source, error) {
+	return utxoBy("address", c, server)
+}
+
+func utxoBy(field string, c bitcoin.Coin, server string) func(string, source.Config) (source.Source, error) {
 	return func(line string, cfg source.Config) (source.Source, error) {
-		v := map[string]string{"address": line}
-		if esplora {
-			v["esplora_url"] = cfg.Get("esplora_url")
+		v := map[string]string{field: line}
+		if server != "" {
+			v["esplora_url"] = cfg.Get(server)
 		}
 		return bitcoin.NewCoin(c, source.Config{Values: v, HTTP: cfg.HTTP, State: cfg.State})
 	}
@@ -108,10 +111,10 @@ func utxoAddress(c bitcoin.Coin, esplora bool) func(string, source.Config) (sour
 // picks the chain when the line alone cannot tell: Ledger Live shows the
 // Bitcoin Cash key as an xpub, like Bitcoin's.
 var chains = []chain{
-	{kind: "bitcoin", name: "Bitcoin", label: "bitcoin", match: keyPrefix("xpub", "ypub", "zpub"), build: utxo(bitcoin.Bitcoin, true)},
-	{kind: "litecoin", name: "Litecoin", label: "litecoin", match: keyPrefix("Ltub", "Mtub"), build: utxo(bitcoin.Litecoin, false)},
-	{kind: "dogecoin", name: "Dogecoin", label: "dogecoin", match: keyPrefix("dgub"), build: utxo(bitcoin.Dogecoin, false)},
-	{kind: "bitcoincash", name: "Bitcoin Cash", label: "bitcoin cash", match: func(string) bool { return false }, build: utxo(bitcoin.BitcoinCash, false)},
+	{kind: "bitcoin", name: "Bitcoin", label: "bitcoin", match: keyPrefix("xpub", "ypub", "zpub"), build: utxo(bitcoin.Bitcoin, "esplora_url")},
+	{kind: "litecoin", name: "Litecoin", label: "litecoin", match: keyPrefix("Ltub", "Mtub"), build: utxo(bitcoin.Litecoin, "litecoin_esplora_url")},
+	{kind: "dogecoin", name: "Dogecoin", label: "dogecoin", match: keyPrefix("dgub"), build: utxo(bitcoin.Dogecoin, "")},
+	{kind: "bitcoincash", name: "Bitcoin Cash", label: "bitcoin cash", match: func(string) bool { return false }, build: utxo(bitcoin.BitcoinCash, "")},
 	{kind: "evm", name: "Ethereum & EVM networks", match: func(l string) bool { return strings.HasPrefix(l, "0x") || strings.HasPrefix(l, "0X") },
 		norm: strings.ToLower,
 		build: func(line string, cfg source.Config) (source.Source, error) {
@@ -123,9 +126,9 @@ var chains = []chain{
 	{kind: "cardano", name: "Cardano", label: "cardano", match: cardano.Valid, build: address(cardano.New)},
 	{kind: "xrp", name: "XRP", label: "xrp", match: xrp.Valid, build: address(xrp.New)},
 	// One address: wallets that use a single one (Phantom, mobile wallets).
-	{kind: "bitcoin", name: "Bitcoin", label: "bitcoin", match: bitcoin.Bitcoin.ValidAddress, build: utxoAddress(bitcoin.Bitcoin, true)},
-	{kind: "litecoin", name: "Litecoin", label: "litecoin", match: bitcoin.Litecoin.ValidAddress, build: utxoAddress(bitcoin.Litecoin, false)},
-	{kind: "dogecoin", name: "Dogecoin", label: "dogecoin", match: bitcoin.Dogecoin.ValidAddress, build: utxoAddress(bitcoin.Dogecoin, false)},
+	{kind: "bitcoin", name: "Bitcoin", label: "bitcoin", match: bitcoin.Bitcoin.ValidAddress, build: utxoAddress(bitcoin.Bitcoin, "esplora_url")},
+	{kind: "litecoin", name: "Litecoin", label: "litecoin", match: bitcoin.Litecoin.ValidAddress, build: utxoAddress(bitcoin.Litecoin, "litecoin_esplora_url")},
+	{kind: "dogecoin", name: "Dogecoin", label: "dogecoin", match: bitcoin.Dogecoin.ValidAddress, build: utxoAddress(bitcoin.Dogecoin, "")},
 	// Last: any 32 bytes in base58 look like a Solana address.
 	{kind: "solana", name: "Solana", match: solana.Valid,
 		build: func(line string, cfg source.Config) (source.Source, error) {

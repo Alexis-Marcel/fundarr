@@ -1,6 +1,7 @@
 package bitcoin
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha512"
 	"encoding/json"
@@ -139,6 +140,7 @@ type fakeEsplora struct {
 	calls   map[string]int
 	fail    int // answer the next n requests with 429
 	errPath string
+	genesis string // answer to /block-height/0, Bitcoin's when empty
 }
 
 func (f *fakeEsplora) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +150,10 @@ func (f *fakeEsplora) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.fail > 0 {
 		f.fail--
 		w.WriteHeader(http.StatusTooManyRequests)
+		return
+	}
+	if r.URL.Path == "/block-height/0" {
+		fmt.Fprint(w, cmp.Or(f.genesis, Bitcoin.Genesis))
 		return
 	}
 	if r.URL.Path == f.errPath {
@@ -288,7 +294,7 @@ func TestWalletHistoryAndBalance(t *testing.T) {
 	// then 20 (0..20). Asked 20 at a time: 0..39 on both chains.
 	n := 0
 	for p := range f.calls {
-		if strings.Count(p, "/") == 2 {
+		if strings.HasPrefix(p, "/address/") && strings.Count(p, "/") == 2 {
 			n++
 		}
 	}
@@ -447,5 +453,69 @@ func TestClientFailsOverToNextServer(t *testing.T) {
 	s2, _ := New(source.Config{Values: map[string]string{"xpub": zpub84, "esplora_url": "https://my.node/api"}})
 	if len(s1.(*Wallet).c.fallback) == 0 || len(s2.(*Wallet).c.fallback) != 0 {
 		t.Error("fallback only for the default")
+	}
+}
+
+func TestCustomServerIsCheckedOnTest(t *testing.T) {
+	f, srv, _ := setup(t)
+	b := newSource(t, srv, nil)
+	if err := b.Test(context.Background()); err != nil || f.calls["/block-height/0"] != 1 {
+		t.Fatalf("mainnet: %v, %d genesis calls", err, f.calls["/block-height/0"])
+	}
+	for genesis, want := range map[string]string{
+		chaincfg.TestNet3Params.GenesisHash.String(): "wrong network: " + srv.URL + " serves Bitcoin testnet, not Bitcoin",
+		chaincfg.SigNetParams.GenesisHash.String():   "serves Bitcoin signet",
+		Litecoin.Genesis:                             "wrong network: " + srv.URL + " does not serve Bitcoin",
+		"<html>404</html>":                           "does not answer like an Esplora API (HTTP 200)",
+		"[]":                                         "does not answer like an Esplora API",
+	} {
+		f.genesis = genesis
+		if err := b.Test(context.Background()); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", genesis, err, want)
+		}
+	}
+	// Not an Esplora at all: a page that is not found.
+	notFound := httptest.NewServer(http.NotFoundHandler())
+	defer notFound.Close()
+	b2 := newSource(t, notFound, nil)
+	if err := b2.Test(context.Background()); err == nil || !strings.Contains(err.Error(), "(HTTP 404)") {
+		t.Errorf("not found: %v", err)
+	}
+	// Unreachable: one try, no waiting.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	b3 := newSource(t, closed, nil)
+	if err := b3.Test(context.Background()); err == nil || !strings.Contains(err.Error(), "cannot reach the Bitcoin server") {
+		t.Errorf("unreachable: %v", err)
+	}
+	// A Litecoin wallet checks Litecoin's genesis.
+	f.genesis = Litecoin.Genesis
+	s, err := NewCoin(Litecoin, source.Config{Values: map[string]string{"xpub": reversion(zpub84, verLtub), "esplora_url": srv.URL}, HTTP: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.(*Wallet).checkServer(context.Background()); err != nil {
+		t.Errorf("litecoin mainnet: %v", err)
+	}
+	f.genesis = "4966625a4b2851d9fdee139e56211a0d88575f59ed816ff5e6a63deb4e3e29a0"
+	if err := s.(*Wallet).checkServer(context.Background()); err == nil || !strings.Contains(err.Error(), "serves Litecoin testnet") {
+		t.Errorf("litecoin testnet: %v", err)
+	}
+	// The public servers are not checked.
+	if d, _ := New(source.Config{Values: map[string]string{"xpub": zpub84}}); d.(*Wallet).custom {
+		t.Error("default servers are not custom")
+	}
+}
+
+func TestGenesisHashes(t *testing.T) {
+	// Bitcoin's comes from btcd; Litecoin's from Litecoin Core's chainparams.
+	if Bitcoin.Genesis != "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f" {
+		t.Errorf("bitcoin genesis %s", Bitcoin.Genesis)
+	}
+	if Litecoin.Genesis != "12a765e31ffd4059bada1e25190f6e98c99d9714d334efa41a195a7e7e04bfe2" {
+		t.Errorf("litecoin genesis %s", Litecoin.Genesis)
+	}
+	if Dogecoin.Genesis != "" || BitcoinCash.Genesis != "" {
+		t.Error("Blockbook-only coins take no custom server")
 	}
 }
