@@ -14,8 +14,10 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/source"
@@ -46,10 +48,13 @@ import (
 
 const (
 	defaultBase = "https://api.traderepublic.com"
-	// The web app's build, sent with every sign-in call: Trade Republic
-	// refuses old ones after a while. FUNDARR_TR_APP_VERSION (or the
-	// source's advanced setting) overrides it without a new Fundarr.
-	appVersion = "2.2631.13"
+	// The web app, whose page names its build in <meta name="app-version">.
+	defaultWebApp = "https://app.traderepublic.com/"
+	// The web app's build, sent with every call: Trade Republic refuses old
+	// ones after a while. The client reads the current one from the web app;
+	// this is the fallback. FUNDARR_TR_APP_VERSION (or the source's advanced
+	// setting) fixes it instead.
+	appVersion = "2.2643.35"
 	platform   = "web-pro"
 	userAgent  = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 	locale     = "en"
@@ -66,9 +71,11 @@ func env(name, def string) string {
 
 type client struct {
 	base       string
+	webApp     string // read once for its build, unless the version is fixed
 	http       *http.Client
 	jar        *cookiejar.Jar
 	appVersion string
+	versionOK  sync.Once
 	platform   string
 	ua         string
 	device     string // stable device id, 128 hex digits
@@ -86,11 +93,47 @@ func newClient(base string, hc *http.Client, device, version string) *client {
 	}
 	h.Jar = jar
 	if version == "" {
-		version = env("FUNDARR_TR_APP_VERSION", appVersion)
+		version = env("FUNDARR_TR_APP_VERSION", "")
 	}
-	return &client{base: base, http: h, jar: jar, appVersion: version, platform: env("FUNDARR_TR_PLATFORM", platform),
+	c := &client{base: base, webApp: defaultWebApp, http: h, jar: jar, appVersion: version, platform: env("FUNDARR_TR_PLATFORM", platform),
 		ua: env("FUNDARR_TR_USER_AGENT", userAgent), device: device, logf: func(string, ...any) {},
 		sleep: sleepCtx, now: func() time.Time { return time.Now().UTC() }}
+	if version != "" {
+		c.versionOK.Do(func() {}) // fixed: never read
+	}
+	return c
+}
+
+var metaVersion = regexp.MustCompile(`<meta\s+name="app-version"\s+content="([0-9][0-9.]{0,31})"`)
+
+// version is the web app's build: read from its page before the first call,
+// appVersion when the page does not tell.
+func (c *client) version(ctx context.Context) string {
+	c.versionOK.Do(func() {
+		c.appVersion = appVersion
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.webApp, nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("User-Agent", c.ua)
+		resp, err := (&http.Client{Transport: c.http.Transport}).Do(req)
+		if err != nil {
+			c.logf("web app version: not read (%v), using %s", scrub(err), appVersion)
+			return
+		}
+		defer resp.Body.Close()
+		page, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		m := metaVersion.FindSubmatch(page)
+		if resp.StatusCode != 200 || m == nil {
+			c.logf("web app version: not on the page (HTTP %d), using %s", resp.StatusCode, appVersion)
+			return
+		}
+		c.appVersion = string(m[1])
+		c.logf("web app version: %s", c.appVersion)
+	})
+	return c.appVersion
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -160,6 +203,7 @@ var loginErrors = map[string]string{
 	"VALIDATION_CODE_INVALID":      "wrong code",
 	"VALIDATION_CODE_ALREADY_USED": "that code was already used",
 	"MISSING_REQUIRED_HEADER":      "the sign-in headers were refused (the web app version may be too old)",
+	"CLIENT_VERSION_OUTDATED":      "the web app version is too old: clear it, or set the current one, under Advanced",
 }
 
 // do sends a request with the web app's headers and decodes a JSON answer
@@ -185,7 +229,7 @@ func (c *client) do(ctx context.Context, method, path string, body any, out any,
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-Language", locale)
 	req.Header.Set("X-TR-Device-Info", c.deviceInfo())
-	req.Header.Set("X-TR-App-Version", c.appVersion)
+	req.Header.Set("X-TR-App-Version", c.version(ctx))
 	req.Header.Set("X-Tr-Platform", c.platform)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -547,11 +591,19 @@ func (c *client) answer(ctx context.Context, p *process, code string) error {
 }
 
 // account checks the session: the securities account number it acts for.
+// Trade Republic may answer 400 (INVALID_AUTH_ACCOUNT_STATE) with a working
+// session; only a 401 or 403 says the session does not work.
 func (c *client) account(ctx context.Context) (string, error) {
 	var a struct {
 		SecuritiesAccountNumber string `json:"securitiesAccountNumber"`
 	}
-	if err := c.call(ctx, http.MethodGet, "/api/v2/auth/account", nil, &a, nil); err != nil {
+	err := c.call(ctx, http.MethodGet, "/api/v2/auth/account", nil, &a, nil)
+	var e *apiError
+	if errors.As(err, &e) && e.Status == 400 {
+		c.logf("account check: HTTP 400 %s, the session is kept", e.Code)
+		return "", nil
+	}
+	if err != nil {
 		return "", err
 	}
 	return a.SecuritiesAccountNumber, nil

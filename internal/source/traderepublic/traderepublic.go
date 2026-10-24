@@ -46,7 +46,7 @@ func init() {
 			{Name: source.ModeField, Label: "Mode", Optional: true, Hidden: true},
 			{Name: "phone", Label: "Phone number", Optional: true, Mode: modeConnect, Help: "As in the app: +33 6 12 34 56 78. Leave empty to sign in with a QR code."},
 			{Name: "pin", Label: "PIN", Secret: true, Optional: true, Mode: modeConnect},
-			{Name: "app_version", Label: "Web app version", Optional: true, Advanced: true, Mode: modeConnect, Help: "leave empty (" + appVersion + ")"},
+			{Name: "app_version", Label: "Web app version", Optional: true, Advanced: true, Mode: modeConnect, Help: "leave empty: read from the web app"},
 			{Name: "base_url", Label: "API URL", Optional: true, Advanced: true, Mode: modeConnect, Help: "leave empty"},
 		},
 		Statement: statementHelp,
@@ -72,10 +72,14 @@ func New(cfg source.Config) (source.Source, error) {
 		s.st.Device = newDevice()
 	}
 	base := strings.TrimRight(strings.TrimSpace(cfg.Get("base_url")), "/")
-	if base == "" {
+	custom := base != ""
+	if !custom {
 		base = defaultBase
 	}
 	s.c = newClient(base, cfg.HTTP, s.st.Device, strings.TrimSpace(cfg.Get("app_version")))
+	if custom {
+		s.c.webApp = base + "/" // a stand-in serves both
+	}
 	if cfg.Log != nil {
 		s.log = cfg.Log
 	} else {
@@ -191,7 +195,8 @@ func (s *Source) Login(ctx context.Context, method string) (*source.Challenge, e
 					wait = time.Hour
 				}
 				s.st.Wait = s.c.now().Add(wait)
-			case method != "qr" && e.Status >= 400 && e.Status < 500 && e.Code != "MISSING_REQUIRED_HEADER" && e.Code != "BLOCKED_BY_FIREWALL":
+			case method != "qr" && e.Status >= 400 && e.Status < 500 && e.Status != 426 &&
+				e.Code != "MISSING_REQUIRED_HEADER" && e.Code != "BLOCKED_BY_FIREWALL" && e.Code != "CLIENT_VERSION_OUTDATED":
 				// Wrong number or PIN: never again with the same.
 				s.st.Refused = s.creds()
 				return nil, fmt.Errorf("%w (phone number or PIN refused: check them in Settings; nothing is retried)", err)
@@ -263,6 +268,10 @@ func (s *Source) Answer(ctx context.Context, code string) (*source.Challenge, er
 // finish keeps the session once approved.
 func (s *Source) finish(ctx context.Context) (*source.Challenge, error) {
 	s.login = nil
+	// The web app turns the approved sign-in into a session first.
+	if err := s.c.refresh(ctx); err != nil {
+		return nil, fmt.Errorf("signed in, but the session was not opened: %w", err)
+	}
 	if _, err := s.c.account(ctx); err != nil {
 		return nil, fmt.Errorf("signed in, but the session does not work: %w", err)
 	}
