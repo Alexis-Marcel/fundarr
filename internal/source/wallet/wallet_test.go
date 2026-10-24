@@ -3,11 +3,17 @@ package wallet
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/source"
+	"github.com/Alexis-Marcel/fundarr/internal/source/bitcoin"
+	"github.com/btcsuite/btcd/btcutil/base58"
 	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/shopspring/decimal"
 )
@@ -220,5 +226,74 @@ func TestNicknames(t *testing.T) {
 	}
 	if _, err := Preview(context.Background(), "nope", source.Config{}); err == nil {
 		t.Error("preview of junk")
+	}
+}
+
+// esplora is a node of one chain: it answers its genesis hash and empty
+// addresses, and remembers which addresses it was asked.
+type esplora struct {
+	genesis string
+	mu      sync.Mutex
+	asked   []string
+}
+
+func (e *esplora) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/block-height/0" {
+		fmt.Fprint(w, e.genesis)
+		return
+	}
+	e.mu.Lock()
+	e.asked = append(e.asked, strings.TrimPrefix(r.URL.Path, "/address/"))
+	e.mu.Unlock()
+	fmt.Fprint(w, `{}`)
+}
+
+func TestOwnServerPerChain(t *testing.T) {
+	btcNode, ltcNode := &esplora{genesis: bitcoin.Bitcoin.Genesis}, &esplora{genesis: bitcoin.Litecoin.Genesis}
+	btcSrv, ltcSrv := httptest.NewServer(btcNode), httptest.NewServer(ltcNode)
+	defer btcSrv.Close()
+	defer ltcSrv.Close()
+	// The BIP84 test key written as a Litecoin Ltub, and a Litecoin address.
+	raw, _, _ := base58.CheckDecode(zpub)
+	ltub := base58.CheckEncode(append([]byte{0x9d, 0xa4, 0x62}, raw[3:]...), 0x01)
+	accounts := zpub + "\n" + ltub + "\nLQTpS3VaYTjCr4s9Y1t5zbeY26zevf7Fb3"
+	build := func(btcURL, ltcURL string) source.Source {
+		t.Helper()
+		s, err := New(source.Config{HTTP: btcSrv.Client(), Values: map[string]string{
+			"accounts": accounts, "esplora_url": btcURL, "litecoin_esplora_url": ltcURL}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	s := build(btcSrv.URL, ltcSrv.URL)
+	if err := s.(source.Tester).Test(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Balances(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Each node is asked about its own chain only: no fallback, no mix.
+	for _, a := range btcNode.asked {
+		if !strings.HasPrefix(a, "bc1") {
+			t.Errorf("bitcoin node asked %s", a)
+		}
+	}
+	ltc := 0
+	for _, a := range ltcNode.asked {
+		if strings.HasPrefix(a, "bc1") || strings.HasPrefix(a, "1") || strings.HasPrefix(a, "3") {
+			t.Errorf("litecoin node asked %s", a)
+		}
+		if a == "LQTpS3VaYTjCr4s9Y1t5zbeY26zevf7Fb3" {
+			ltc++
+		}
+	}
+	if len(btcNode.asked) == 0 || ltc == 0 {
+		t.Errorf("asked: bitcoin %d, litecoin %v", len(btcNode.asked), ltcNode.asked)
+	}
+	// Servers swapped: Test names the account and the wrong network.
+	err := build(ltcSrv.URL, btcSrv.URL).(source.Tester).Test(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "bitcoin: wrong network") {
+		t.Errorf("swapped: %v", err)
 	}
 }

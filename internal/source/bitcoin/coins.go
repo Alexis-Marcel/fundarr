@@ -15,6 +15,10 @@ import (
 type Coin struct {
 	Name   string // "Bitcoin"
 	Symbol string // "BTC"
+	// Genesis is the hash of block 0 on the main network: a server the user
+	// chose must answer it, or it indexes another chain or a test network.
+	// Empty for coins read from public servers only.
+	Genesis string
 	// params encodes addresses (version bytes, bech32 prefix).
 	params *chaincfg.Params
 	// cashaddr: Bitcoin Cash writes addresses as bitcoincash:q…
@@ -46,6 +50,7 @@ var (
 
 var (
 	Bitcoin = Coin{Name: "Bitcoin", Symbol: "BTC", params: &chaincfg.MainNetParams,
+		Genesis: chaincfg.MainNetParams.GenesisHash.String(),
 		keys: map[[4]byte][]scriptType{
 			verXpub: {p2wpkh, p2tr, p2shP2wpkh, p2pkh},
 			verYpub: {p2shP2wpkh},
@@ -54,7 +59,9 @@ var (
 		servers: []server{{url: "https://mempool.space/api"}, {url: "https://blockstream.info/api"}}}
 
 	Litecoin = Coin{Name: "Litecoin", Symbol: "LTC",
-		params: &chaincfg.Params{Name: "litecoin", PubKeyHashAddrID: 0x30, ScriptHashAddrID: 0x32, Bech32HRPSegwit: "ltc"},
+		// Litecoin Core, src/chainparams.cpp (CMainParams).
+		Genesis: "12a765e31ffd4059bada1e25190f6e98c99d9714d334efa41a195a7e7e04bfe2",
+		params:  &chaincfg.Params{Name: "litecoin", PubKeyHashAddrID: 0x30, ScriptHashAddrID: 0x32, Bech32HRPSegwit: "ltc"},
 		keys: map[[4]byte][]scriptType{
 			verLtub: {p2wpkh, p2shP2wpkh, p2pkh},
 			verXpub: {p2wpkh, p2shP2wpkh, p2pkh},
@@ -72,6 +79,17 @@ var (
 		keys:    map[[4]byte][]scriptType{verXpub: {p2pkh}},
 		servers: []server{{url: "https://bchblockexplorer.com/api/v2", blockbook: true}}}
 )
+
+// testNetworks names the genesis hashes of networks that are not a coin's
+// main one, for a clearer error when a server indexes one of them.
+var testNetworks = map[string]string{
+	chaincfg.TestNet3Params.GenesisHash.String():      "Bitcoin testnet",
+	chaincfg.SigNetParams.GenesisHash.String():        "Bitcoin signet",
+	chaincfg.RegressionNetParams.GenesisHash.String(): "Bitcoin regtest",
+	// Litecoin Core, src/chainparams.cpp (CTestNetParams, CRegTestParams).
+	"4966625a4b2851d9fdee139e56211a0d88575f59ed816ff5e6a63deb4e3e29a0": "Litecoin testnet",
+	"530827f38f93b43ed12af0b3ad25a288dc02ed74d6d7857862df51fc56c416f9": "Litecoin regtest",
+}
 
 // ValidAddress reports whether a is one address of the coin (legacy,
 // nested or native segwit, taproot). Bitcoin Cash addresses are not read
