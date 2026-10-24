@@ -21,7 +21,7 @@
 
 Paid portfolio apps sell this sync. Fundarr is free, self-hosted, and your keys never leave your server.
 
-- **Sources**: Binance, OKX, Kraken, Coinbase, Bitpanda, Trade Republic, and any wallet (Ledger, Trezor, MetaMask, Phantom…), all read-only.
+- **Sources**: Binance, OKX, Kraken, Coinbase, Bitpanda, Interactive Brokers, Trade Republic, and any wallet (Ledger, Trezor, MetaMask, Phantom…), all read-only.
 - **One checked history**: Fundarr replays it against the real balances, fills the gaps APIs leave, and pairs transfers between your accounts.
 - **Apps**: Wealthfolio and Ghostfolio receive it after every sync; Cairn, Koinly or your own app read it.
 
@@ -61,6 +61,7 @@ Just looking? `docker run --rm -e FUNDARR_DEMO=1 -p 9494:9494 ghcr.io/alexis-mar
 | **Kraken** | The whole ledger. |
 | **Coinbase** | The whole history, Advanced Trade included. |
 | **Bitpanda** | Crypto, stocks and ETFs, metals, savings plans. |
+| **Interactive Brokers** | Trades, dividends, cash, transfers and corporate actions through the official Flex Web Service. |
 | **Trade Republic** | Compte-titres, PEA and crypto: import the CSV export, or Connect (beta) and sync with one tap, approved in the app. |
 | **Wallet** | Bitcoin, Litecoin, Dogecoin, Bitcoin Cash, Ethereum and EVM chains, Solana, Tron, Cardano, XRP. Paste a public key or an address, never a recovery phrase. |
 
