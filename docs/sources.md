@@ -32,7 +32,7 @@ Compte-titres, PEA and crypto, each account apart (the PEA can go to its own app
 
 **Connect (beta).** Fundarr signs in to Trade Republic's web API like its website does: phone number and PIN (stored encrypted), or a QR code. Tap **Sync now**: the Trade Republic app asks you to approve, then Fundarr downloads the same export and reads the balances. The session lasts 24 hours; syncs in that time need nothing from you, then the source waits for the next approval and is not retried. **Copy sync link** gives an address (`/sources/{id}/sync`) to keep on your phone's home screen: one tap syncs. Trade Republic does not offer this API and its terms likely forbid using it: use it knowingly. A refused PIN is never tried again until you change it.
 
-If the web app version Trade Republic expects changes, set it under Advanced (or `FUNDARR_TR_APP_VERSION`). Every sign-in and sync step is in the source's log, without secrets.
+Fundarr reads the web app's current version from app.traderepublic.com before signing in; to send another one, set it under Advanced (or `FUNDARR_TR_APP_VERSION`). Every sign-in and sync step is in the source's log, without secrets.
 
 Limits:
 

@@ -31,6 +31,15 @@ type Fake struct {
 	TooMany bool
 	// NoSocket: the websocket refuses.
 	NoSocket bool
+	// Version is the build the web app's page names; Strict refuses any
+	// other with 426, as Trade Republic does with an old one.
+	Version string
+	Strict  bool
+	// AccountState: /api/v2/auth/account answers 400
+	// INVALID_AUTH_ACCOUNT_STATE, the session working all the same.
+	AccountState bool
+	// Pages: how often the web app's page was read.
+	Pages int
 	// Export is the CSV the export downloads.
 	Export string
 	// cash is the cash topic's answer (SetCash); fakeCash when empty.
@@ -50,7 +59,7 @@ type Fake struct {
 }
 
 func NewFake(t testing.TB) *Fake {
-	f := &Fake{Phone: "+33612345678", PIN: "1234", ApproveAfter: 2, polls: map[string]int{}, verified: map[string]bool{},
+	f := &Fake{Phone: "+33612345678", PIN: "1234", ApproveAfter: 2, Version: "2.9999.1", polls: map[string]int{}, verified: map[string]bool{},
 		scanned: map[string]string{}, sessions: map[string]bool{}, refreshes: map[string]bool{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
@@ -128,7 +137,16 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if r.Method == "GET" && r.URL.Path == "/" {
+		f.Pages++
+		fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"/><meta name="app-version" content="%s"/></head><body></body></html>`, f.Version)
+		return
+	}
 	f.Requests = append(f.Requests, r.Method+" "+r.URL.Path)
+	if f.Strict && r.Header.Get("X-TR-App-Version") != f.Version {
+		fail(w, 426, "CLIENT_VERSION_OUTDATED")
+		return
+	}
 	if r.Header.Get("X-TR-Device-Info") == "" || r.Header.Get("X-TR-App-Version") == "" || r.Header.Get("X-Tr-Platform") != "web-pro" ||
 		!strings.Contains(r.Header.Get("User-Agent"), "Chrome/") {
 		fail(w, 400, "MISSING_REQUIRED_HEADER")
@@ -207,6 +225,8 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	case !f.signedIn(r):
 		fail(w, 401, "UNAUTHORIZED")
+	case r.Method == "GET" && p == "/api/v2/auth/account" && f.AccountState:
+		fail(w, 400, "INVALID_AUTH_ACCOUNT_STATE")
 	case r.Method == "GET" && p == "/api/v2/auth/account":
 		reply(w, map[string]any{"securitiesAccountNumber": "SEC1", "currency": "EUR"})
 	case r.Method == "POST" && p == "/api/v1/portfolio-analytics/transactions/export/request":
