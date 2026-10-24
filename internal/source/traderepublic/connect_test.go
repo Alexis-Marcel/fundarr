@@ -370,3 +370,72 @@ func TestCashBalancesWithoutHistory(t *testing.T) {
 		}
 	}
 }
+
+// The web app's build is read from its page, once per connector: an old
+// one is refused by Trade Republic.
+func TestConnectAppVersion(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake(t)
+	f.Strict = true
+	log := &logBook{}
+	s := connect(t, f, nil, nil, log)
+	c, err := s.Login(ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approve(t, s, c)
+	if f.Pages != 1 || !strings.Contains(log.String(), "web app version: 2.9999.1") {
+		t.Fatalf("page read %d times:\n%s", f.Pages, log)
+	}
+
+	// A version set by hand is sent as is, the page left alone.
+	s = connect(t, f, map[string]string{"app_version": "2.2631.13"}, nil, nil)
+	if _, err := s.Login(ctx, "app"); err == nil || !strings.Contains(err.Error(), "too old") {
+		t.Fatalf("old version: %v", err)
+	}
+	if f.Pages != 1 {
+		t.Fatalf("page read with a fixed version")
+	}
+	// An old version is not a wrong PIN: the same PIN signs in once it is cleared.
+	s = connect(t, f, nil, s.State(), nil)
+	if _, err := s.Login(ctx, "app"); err != nil {
+		t.Fatalf("PIN held as refused after an old version: %v", err)
+	}
+
+	// No version on the page: the built-in one.
+	f.Version, f.Strict = "", false
+	log = &logBook{}
+	s = connect(t, f, nil, nil, log)
+	if _, err := s.Login(ctx, "qr"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "using "+appVersion) {
+		t.Fatalf("no fallback:\n%s", log)
+	}
+}
+
+// Approved in the app: the session is opened before it is checked, and an
+// account check refused with 400 keeps it (seen on 2026-10-23).
+func TestConnectAccountState(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake(t)
+	f.Export = fakeExport()
+	f.AccountState = true
+	s := connect(t, f, nil, nil, nil)
+	c, err := s.Login(ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approve(t, s, c)
+	if !s.Session().Valid(time.Now()) {
+		t.Fatal("not signed in")
+	}
+	order := strings.Join(f.Requests, "\n")
+	if i, j := strings.Index(order, "GET /api/v1/auth/web/session"), strings.Index(order, "GET /api/v2/auth/account"); i < 0 || j < i {
+		t.Fatalf("session not opened before the check:\n%s", order)
+	}
+	s = connect(t, f, nil, s.State(), nil)
+	if _, _, err := s.FetchStatement(ctx, source.Fetch{}); err != nil {
+		t.Fatal(err)
+	}
+}
