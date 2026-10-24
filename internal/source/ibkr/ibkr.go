@@ -38,6 +38,7 @@ func init() {
 		Kind:        "ibkr",
 		Name:        "Interactive Brokers",
 		Category:    "broker",
+		Beta:        true,
 		Description: "Stocks, ETFs and bonds, through the Flex Web Service.",
 		Fields: []source.Field{
 			{Name: "token", Label: "Flex Web Service token", Secret: true},

@@ -54,6 +54,7 @@ export interface SourceDef {
   hidden?: boolean; // kept for existing sources, not offered for new ones
   modes?: Mode[]; // ways of using it; the "mode" setting holds the one chosen
   noTest?: boolean; // the form has no "Test connection"
+  beta?: boolean; // not yet checked against a real account
 }
 
 export interface DestDef {

@@ -24,7 +24,9 @@ The whole history, with a CDP key that has the View permission only: buys, sells
 
 The whole history, with a read-only key (Balances, Transaction) on the new Public API: crypto, stocks and ETFs (by ISIN), metals, savings plans, staking and BEST rewards, dividends.
 
-## Interactive Brokers
+## Interactive Brokers (beta)
+
+**Beta:** built from IBKR's documentation and not yet checked against a real account. If a sync looks wrong, please open an issue with the source's log (it holds no secrets).
 
 Through IBKR's official, read-only Flex Web Service. In the Client Portal, open **Performance & Reports → Flex Queries**, create an **Activity Flex Query** in **XML** with the sections Trades (Executions), Cash Transactions, Open Positions, Cash Report, Corporate Actions and Transfers, and note its Query ID. Under **Flex Web Service Configuration**, enable the service and generate a token. Fundarr needs the token and the Query ID; the token can only read reports.
 
