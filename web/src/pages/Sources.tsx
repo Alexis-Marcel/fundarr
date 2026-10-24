@@ -166,7 +166,10 @@ function AddSource({ defs, onClose, onAdded }: { defs: SourceDef[]; onClose: () 
             <button key={d.kind} className="pick" onClick={() => setDef(d)}>
               <KindBadge kind={d.kind} size={44} />
               <span>
-                <strong>{d.name}</strong>
+                <strong>
+                  {d.name}
+                  {d.beta && <span className="beta">beta</span>}
+                </strong>
                 <small>{d.category}</small>
               </span>
             </button>

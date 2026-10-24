@@ -76,6 +76,9 @@ type Definition struct {
 	// NoTest: the form has no "Test connection" (checking would need the
 	// user, like a sign-in to approve).
 	NoTest bool `json:"noTest,omitempty"`
+	// Beta: built from the platform's documentation and not yet checked
+	// against a real account; the UI says so.
+	Beta bool `json:"beta,omitempty"`
 	// Modes, when set, are the ways the source can be used (a statement
 	// file, a connection...); fields with a Mode belong to one of them.
 	Modes []Mode `json:"modes,omitempty"`

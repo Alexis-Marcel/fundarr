@@ -24,6 +24,17 @@ The whole history, with a CDP key that has the View permission only: buys, sells
 
 The whole history, with a read-only key (Balances, Transaction) on the new Public API: crypto, stocks and ETFs (by ISIN), metals, savings plans, staking and BEST rewards, dividends.
 
+## Interactive Brokers (beta)
+
+**Beta:** built from IBKR's documentation and not yet checked against a real account. If a sync looks wrong, please open an issue with the source's log (it holds no secrets).
+
+Through IBKR's official, read-only Flex Web Service. In the Client Portal, open **Performance & Reports → Flex Queries**, create an **Activity Flex Query** in **XML** with the sections Trades (Executions), Cash Transactions, Open Positions, Cash Report, Corporate Actions and Transfers, and note its Query ID. Under **Flex Web Service Configuration**, enable the service and generate a token. Fundarr needs the token and the Query ID; the token can only read reports.
+
+- Trades by ISIN with their commission and transaction taxes, currency conversions, deposits and withdrawals, dividends and withholding tax, interest, fees, position transfers in and out (ACATS, internal), splits and other corporate actions. Balances are the open positions and the cash per currency from the Cash Report.
+- IBKR returns at most 365 days per report, as of yesterday's close. The first sync reads back a year at a time until it finds two empty years; set **Account opened on** to read exactly from that date. Later syncs read from a week before the last one.
+- Options, futures, CFDs and other derivatives are skipped (and logged), so their cash shows as a balance correction. When a query covers several accounts, only the first is read: make one query per account.
+- Times in Flex reports are New York time and are converted to UTC. A reverse split or a merger into a new ISIN is booked as the old shares sold for the cash paid (often nothing) and the new ones bought for nothing.
+
 ## Trade Republic
 
 Compte-titres, PEA and crypto, each account apart (the PEA can go to its own app account). Two ways, picked in the form:
