@@ -154,6 +154,7 @@ func run(log *slog.Logger) error {
 	}
 	if demoMode {
 		log.Warn("demo mode: made-up data in memory, no sign-in, no syncs; any token reads /api/v1")
+		go demo.Roll(ctx, st, func(err error) { log.Error("demo: rolling to the new day", "err", err) })
 	} else {
 		go eng.Run(ctx)
 	}
