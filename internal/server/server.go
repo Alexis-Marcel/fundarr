@@ -36,6 +36,9 @@ type Config struct {
 	Background context.Context
 	// Demo: the data is made up (FUNDARR_DEMO); nothing reaches a platform.
 	Demo bool
+	// ReadOnly: a demo shared with the public (FUNDARR_DEMO=public), where
+	// nothing can be changed either.
+	ReadOnly bool
 }
 
 type Server struct {
@@ -172,6 +175,10 @@ func (s *Server) protect(h http.HandlerFunc, maxBody int64) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "sign in first")
 			return
 		}
+		if s.cfg.ReadOnly && r.Method != http.MethodGet && r.Method != http.MethodHead && !storesNothing(r) {
+			writeErr(w, http.StatusForbidden, "this public demo is read-only: run your own with docker run --rm -e FUNDARR_DEMO=1 -p 9494:9494 ghcr.io/alexis-marcel/fundarr")
+			return
+		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 				writeErr(w, http.StatusUnsupportedMediaType, "JSON body required")
@@ -187,6 +194,12 @@ func (s *Server) protect(h http.HandlerFunc, maxBody int64) http.HandlerFunc {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		h(w, r)
 	}
+}
+
+// storesNothing: a write route a read-only demo still serves, because it
+// only looks at what was typed (what kind of key or address it is).
+func storesNothing(r *http.Request) bool {
+	return strings.HasPrefix(r.URL.Path, "/api/kinds/") && strings.HasSuffix(r.URL.Path, "/detect")
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -208,15 +221,16 @@ func newID() string {
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"user":    s.auth.user(r),
-		"mode":    s.auth.cfg.Mode,
-		"setup":   s.auth.needsSetup(r.Context()),
-		"local":   fromPrivateNetwork(r),
-		"fixed":   s.auth.cfg.PasswordHash != "",
-		"auto":    s.auth.cfg.Mode == "oidc" && s.auth.cfg.OIDCAutoRedirect,
-		"version": s.cfg.Version,
-		"demo":    s.cfg.Demo,
-		"url":     s.auth.cfg.PublicURL,
+		"user":     s.auth.user(r),
+		"mode":     s.auth.cfg.Mode,
+		"setup":    s.auth.needsSetup(r.Context()),
+		"local":    fromPrivateNetwork(r),
+		"fixed":    s.auth.cfg.PasswordHash != "",
+		"auto":     s.auth.cfg.Mode == "oidc" && s.auth.cfg.OIDCAutoRedirect,
+		"version":  s.cfg.Version,
+		"demo":     s.cfg.Demo,
+		"readOnly": s.cfg.ReadOnly,
+		"url":      s.auth.cfg.PublicURL,
 	})
 }
 
