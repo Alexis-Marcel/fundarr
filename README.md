@@ -39,7 +39,7 @@ or `docker run -d -p 9494:9494 -v fundarr:/data ghcr.io/alexis-marcel/fundarr`. 
 
 **3. Connect an app.** **Apps → Add app**: Wealthfolio, Ghostfolio, Cairn, or any other app.
 
-Just looking? `docker run --rm -e FUNDARR_DEMO=1 -p 9494:9494 ghcr.io/alexis-marcel/fundarr` serves a made-up portfolio, no account needed.
+Just looking? Open the **[live demo](https://fundarr-demo.eriphe.com)** (made-up portfolio, read-only), or run it yourself: `docker run --rm -e FUNDARR_DEMO=1 -p 9494:9494 ghcr.io/alexis-marcel/fundarr`, no account needed.
 
 <table>
   <tr>
