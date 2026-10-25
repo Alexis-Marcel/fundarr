@@ -83,7 +83,9 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	demoMode := isTrue(os.Getenv("FUNDARR_DEMO"))
+	// FUNDARR_DEMO=public: the demo, read-only, for a shared instance.
+	demoPublic := strings.EqualFold(strings.TrimSpace(os.Getenv("FUNDARR_DEMO")), "public")
+	demoMode := demoPublic || isTrue(os.Getenv("FUNDARR_DEMO"))
 	var st *store.Store
 	var box *secret.Box
 	var err error
@@ -126,6 +128,7 @@ func run(log *slog.Logger) error {
 	srv, err := server.New(ctx, server.Config{
 		Engine:     eng,
 		Demo:       demoMode,
+		ReadOnly:   demoPublic,
 		Static:     static,
 		Version:    version,
 		Log:        log,

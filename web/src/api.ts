@@ -253,6 +253,7 @@ export interface Session {
   auto: boolean; // go to the identity provider without a click
   version: string;
   demo: boolean; // FUNDARR_DEMO: made-up data, nothing syncs
+  readOnly: boolean; // FUNDARR_DEMO=public: nothing can be changed either
   url: string; // FUNDARR_URL, "" when unset
 }
 

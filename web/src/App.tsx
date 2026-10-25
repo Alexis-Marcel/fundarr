@@ -188,11 +188,19 @@ function Shell({ session }: { session: Session }) {
         </div>
       </aside>
       <main className="main">
-        {session.demo && (
-          <p className="demo-banner">
-            <strong>Demo data</strong> Made up, nothing syncs.
-          </p>
-        )}
+        {session.demo &&
+          (session.readOnly ? (
+            <p className="demo-banner">
+              <strong>Public demo</strong> Made-up data, read-only.{" "}
+              <a href="https://github.com/Alexis-Marcel/fundarr" target="_blank" rel="noreferrer">
+                Run your own
+              </a>
+            </p>
+          ) : (
+            <p className="demo-banner">
+              <strong>Demo data</strong> Made up, nothing syncs.
+            </p>
+          ))}
         {defs && (
           <Routes>
             <Route path="/" element={<Navigate to="/sources" replace />} />

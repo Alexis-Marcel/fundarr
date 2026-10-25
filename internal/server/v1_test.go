@@ -166,3 +166,55 @@ func TestDemo(t *testing.T) {
 		t.Fatal("a sync started")
 	}
 }
+
+// TestPublicDemo: FUNDARR_DEMO=public serves the same data but refuses
+// every change, except checks that store nothing.
+func TestPublicDemo(t *testing.T) {
+	st, err := demo.Open(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	box, _ := secret.New(bytes.Repeat([]byte{7}, 32))
+	eng := engine.New(st, box, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	eng.Prices = price.New(st, nil)
+	eng.Prices.Market = demo.Market
+	bg, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(context.Background(), Config{Engine: eng, Demo: true, ReadOnly: true, Auth: AuthConfig{Mode: "none"}, Background: bg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	c := http.DefaultClient
+
+	var session struct{ Demo, ReadOnly bool }
+	if do(t, c, "GET", ts.URL+"/api/session", nil, &session); !session.Demo || !session.ReadOnly {
+		t.Fatalf("session %+v", session)
+	}
+	src := ts.URL + "/api/sources/" + demo.Binance.ID
+	for _, w := range []struct {
+		method, url string
+		body        any
+	}{
+		{"PUT", src, map[string]any{"name": "Renamed"}},
+		{"DELETE", src, nil},
+		{"PUT", ts.URL + "/api/settings", map[string]any{}},
+		{"PUT", ts.URL + "/api/transfers", map[string]any{}},
+		{"POST", ts.URL + "/api/tokens", map[string]string{"name": "Cairn"}},
+		{"POST", ts.URL + "/api/password", map[string]string{}},
+	} {
+		if code := do(t, c, w.method, w.url, w.body, nil); code != 403 {
+			t.Errorf("%s %s: %d, want 403", w.method, w.url, code)
+		}
+	}
+	var sources []struct{ Name string }
+	if code := do(t, c, "GET", ts.URL+"/api/v1/sources", nil, &sources); code != 200 || len(sources) != 4 || sources[0].Name == "Renamed" {
+		t.Fatalf("sources %d %+v", code, sources)
+	}
+	// Telling what a pasted key is stores nothing: still served.
+	if code := do(t, c, "POST", ts.URL+"/api/kinds/wallet/detect", map[string]string{"value": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"}, nil); code == 403 {
+		t.Fatal("detect refused")
+	}
+}
