@@ -12,6 +12,12 @@ docker run --rm -e FUNDARR_DEMO=1 -p 9494:9494 ghcr.io/alexis-marcel/fundarr
 
 Open http://localhost:9494 to see the same data in Fundarr.
 
+To see a finished app on it, [`compose.demo.yaml`](../compose.demo.yaml) runs the demo with [Cairn](https://github.com/Alexis-Marcel/cairn) linked to it (Cairn on http://localhost:8080):
+
+```sh
+docker compose -f compose.demo.yaml up
+```
+
 ## 2. Make a request
 
 ```sh

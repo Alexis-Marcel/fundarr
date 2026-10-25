@@ -1,0 +1,24 @@
+# Fundarr's demo with Cairn, an app built on it, in one command:
+#   docker compose -f compose.demo.yaml up
+# Fundarr: http://localhost:9494 · Cairn: http://localhost:8080
+# Made-up data, in memory: nothing is written to disk, stop it and it is gone.
+services:
+  fundarr:
+    image: ghcr.io/alexis-marcel/fundarr:latest
+    environment:
+      FUNDARR_DEMO: "1"
+    ports:
+      - "127.0.0.1:9494:9494"
+
+  cairn:
+    image: ghcr.io/alexis-marcel/cairn:latest
+    environment:
+      FUNDARR_URL: http://fundarr:9494
+      FUNDARR_TOKEN: fdr_demo # the demo accepts any token
+    tmpfs:
+      - /data:uid=65532,gid=65532
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      fundarr:
+        condition: service_healthy # so Cairn's first sync finds it
