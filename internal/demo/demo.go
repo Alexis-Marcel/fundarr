@@ -480,6 +480,24 @@ func Seed(ctx context.Context, st *store.Store, now time.Time) error {
 	return nil
 }
 
+// Roll keeps a demo that runs for days current: every UTC midnight it
+// seeds st again at the new day, which adds the days in between (the
+// activities are the same up to then, so nothing is duplicated) and moves
+// the balances to that day. It returns when ctx ends.
+func Roll(ctx context.Context, st *store.Store, onErr func(error)) {
+	for {
+		now := time.Now().UTC()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(now.Truncate(day).Add(day).Sub(now)):
+		}
+		if err := Seed(ctx, st, time.Now().UTC()); err != nil && ctx.Err() == nil {
+			onErr(err)
+		}
+	}
+}
+
 // Open returns a store in memory, seeded at now: the demo never reads or
 // writes a file.
 func Open(ctx context.Context, now time.Time) (*store.Store, error) {

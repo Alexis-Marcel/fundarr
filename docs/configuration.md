@@ -12,7 +12,7 @@ Fundarr works with no setting: run it, open it, create your account. Everything 
 | `FUNDARR_ADDR` | Listen address (default `:9494`). |
 | `FUNDARR_URL` | The address you open Fundarr at (`https://fundarr.example.com`). Needed for single sign-on, and shown to apps as the API address. |
 | `FUNDARR_SECRET_KEY` | Master key in base64 (`openssl rand -base64 32`), instead of the key file. |
-| `FUNDARR_DEMO` | `1` serves a made-up portfolio from memory, without sign-in or syncs, to try Fundarr or build an app. The data directory is not touched. `public` does the same and refuses every change too, for a demo shared with others. |
+| `FUNDARR_DEMO` | `1` serves a made-up portfolio from memory, without sign-in or syncs, to try Fundarr or build an app. The data directory is not touched, and the data rolls forward to the new day every night (UTC). `public` does the same and refuses every change too, for a demo shared with others. |
 
 ## Sign-in
 

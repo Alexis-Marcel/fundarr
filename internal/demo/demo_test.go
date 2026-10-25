@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Alexis-Marcel/fundarr/internal/engine"
+	"github.com/Alexis-Marcel/fundarr/internal/store"
 	"github.com/Alexis-Marcel/fundarr/pkg/model"
 	"github.com/Alexis-Marcel/fundarr/pkg/portfolio"
 	"github.com/Alexis-Marcel/fundarr/pkg/price"
@@ -115,5 +116,40 @@ func TestSeed(t *testing.T) {
 	points, unpriced := portfolio.History(l.Acts, l.In, unit, days)
 	if len(points) < 40 || len(unpriced) > 0 || !points[len(points)-1].Value.Equal(p.Value) {
 		t.Fatalf("history %d points, last %+v, now %s", len(points), points[len(points)-1], p.Value)
+	}
+}
+
+// TestSeedAgain: seeding the same store at a later day, as Roll does every
+// night, adds the days in between without duplicates and moves the
+// balances to that day.
+func TestSeedAgain(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	later := now.Add(40 * day)
+	if err := Seed(ctx, st, later); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := Open(ctx, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { fresh.Close() })
+	for _, src := range []string{Binance.ID, Kraken.ID, Ledger.ID, TR.ID} {
+		got, err := st.Activities(ctx, store.ActivityFilter{SourceID: src})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := fresh.Activities(ctx, store.ActivityFilter{SourceID: src})
+		if len(got) != len(want) {
+			t.Fatalf("%s: %d activities after the roll, %d when seeded that day", src, len(got), len(want))
+		}
+		b, at, err := st.Balances(ctx, src)
+		if err != nil || !at.Equal(later) || len(b) == 0 {
+			t.Fatalf("%s: balances at %s, %d, %v", src, at, len(b), err)
+		}
 	}
 }
